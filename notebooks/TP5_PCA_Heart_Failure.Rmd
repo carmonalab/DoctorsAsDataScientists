@@ -1,0 +1,561 @@
+---
+title: "TP5 — Principal Component Analysis (PCA)"
+subtitle: "Doctors as Data Scientists · Dimensionality Reduction and Patient Profiling"
+author: "Massimo Andreatta"
+date: "`r Sys.Date()`"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file, encoding=encoding,
+  output_file=file.path(dirname(input_file), '..', out_dir, 'TP5_PCA_Heart_Failure.html'))})
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, fig.align = "center")
+```
+
+> **How to use this notebook.** You do **not** need any programming experience.
+> Read each short explanation, then press the green *play* button (▶) at the
+> top-right of each grey *code chunk* to run it. Look at the output, and answer
+> the **Questions** in the green boxes (write your answers in plain text under
+> each one). The goal is to *understand the data and the method*, not to
+> memorise code.
+
+# Introduction to Principal Component Analysis
+
+## The problem: too many variables, too few dimensions
+
+In medicine we routinely measure many things about each patient — blood tests,
+vital signs, imaging findings. When there are six, ten, or fifty measurements
+per patient, it becomes impossible to *see* the data: you cannot draw a
+50-dimensional scatter plot. Yet a lot of information in those measurements is
+**redundant** — for example, two liver enzymes that always rise together carry
+roughly the same information.
+
+**Principal Component Analysis (PCA)** exploits this redundancy to compress
+many variables into a small number of new variables — the **principal
+components** — that still capture most of the interesting variation. Think of
+it as finding the best angle from which to photograph a 3-D sculpture: you
+lose one dimension, but if you choose the right angle you preserve the
+important structure.
+
+## What PCA actually does — step by step
+
+Imagine you have measured two things about each patient: ejection fraction and
+serum creatinine. You could plot every patient as a point in a 2-D scatter
+plot. PCA asks: *what single axis through this cloud of points captures the
+most spread?* That axis is **PC1**. A second axis, perpendicular to the first,
+captures the next most spread — that is **PC2**. Together they form a new
+coordinate system that is rotated relative to the original axes.
+
+```{r pca-intuition, fig.width=7, fig.height=5, echo=FALSE}
+set.seed(7)
+n  <- 120
+z1 <- rnorm(n); z2 <- rnorm(n, sd = 0.35)
+# Rotate by ~40 degrees to create correlated variables
+theta <- -40 * pi / 180
+x <- cos(theta) * z1 - sin(theta) * z2
+y <- sin(theta) * z1 + cos(theta) * z2
+
+pca_toy <- prcomp(cbind(x, y), scale. = FALSE)
+v1 <- pca_toy$rotation[, 1]
+v2 <- pca_toy$rotation[, 2]
+sc <- 1.5
+
+plot(x, y, pch = 19, col = adjustcolor("steelblue", alpha.f = 0.5), cex = 0.9,
+     xlab = "Measurement 1  (e.g. ejection fraction)",
+     ylab = "Measurement 2  (e.g. serum creatinine)",
+     main = "PCA: finding new axes through the data cloud",
+     asp = 1)
+arrows(0, 0, sc * v1[1], sc * v1[2],
+       col = "red", lwd = 4, length = 0.15)
+arrows(0, 0, sc * v2[1], sc * v2[2],
+       col = "orange", lwd = 4, length = 0.15)
+text(sc * v1[1] * 1.18, sc * v1[2] * 1.18, "PC1", col = "red",    cex = 1.2, font = 2)
+text(sc * v2[1] * 1.45, sc * v2[2] * 1.45, "PC2", col = "orange", cex = 1.2, font = 2)
+```
+
+The red arrow (PC1) points in the direction of greatest spread — patients are
+most spread out along this axis. The orange arrow (PC2) is perpendicular to
+PC1 and captures the remaining spread.
+
+In this toy example we still have two dimensions, so nothing is gained yet.
+The real benefit appears when we have **many** variables.
+PCA finds the directions of greatest variance in the N-dimensional space,
+and we can keep only the first two or three PCs — which together capture the
+majority of the information — and discard the rest. We compress many dimensions
+into two while losing only a small fraction of information, making the data
+possible to visualise and interpret.
+
+## Key vocabulary
+
+| Term | Plain-language meaning |
+|---|---|
+| **Principal component (PC)** | A new axis through the data; a weighted combination of the original variables |
+| **Score** | A patient's coordinate on a PC — where they sit along that axis |
+| **Loading** | How much each original variable contributes to a PC (its "weight" on that axis) |
+| **Variance explained** | The % of total spread captured by a PC — larger means more informative |
+| **Scree plot** | A bar chart of variance explained by each PC, used to decide how many to keep |
+| **Biplot** | A combined plot showing both patient scores and variable loadings |
+
+## What PCA can — and cannot — do
+
+PCA is an **unsupervised** method: it looks only at the measurements, with no
+knowledge of clinical outcomes. It will find the directions of greatest
+variation, which may or may not align with what we care about clinically. When
+the main sources of biological variation *do* align with disease severity or
+prognosis, PCA makes that structure visible. When they do not (for instance,
+if the dominant variation is technical noise), PCA can mislead. Always
+interpret the components biologically before drawing conclusions.
+
+---
+
+# The dataset: heart failure clinical records
+
+Heart failure occurs when the heart cannot pump enough blood to
+meet the needs of the body. When the heart cannot pump properly, the body fails 
+to get sufficient oxygen and nutrients.
+
+This dataset contains clinical measurements from
+**299 heart failure patients** admitted to a hospital in Faisalabad, Pakistan
+(Ahmad T *et al.* 2017, *PLOS ONE*). Each row is one patient; each column is
+a clinical measurement or risk factor recorded at admission.
+
+| Variable | Description | Units |
+|---|---|---|
+| `age` | Age of the patient | years |
+| `anaemia` | Decrease of red blood cells (0 = no, 1 = yes) | binary |
+| `creatinine_phosphokinase` | CPK enzyme level — marker of muscle damage | mcg/L |
+| `diabetes` | Whether the patient has diabetes (0/1) | binary |
+| `ejection_fraction` | % of blood pumped out per heartbeat | % |
+| `high_blood_pressure` | Hypertension (0/1) | binary |
+| `platelets` | Platelet count | kiloplatelets/mL |
+| `serum_creatinine` | Serum creatinine — marker of kidney function | mg/dL |
+| `serum_sodium` | Serum sodium level | mEq/L |
+| `sex` | Sex (0 = female, 1 = male) | binary |
+| `smoking` | Smoking status (0/1) | binary |
+| `time` | Follow-up period until death or end of study | days |
+| `DEATH_EVENT` | Died during follow-up (0 = no, 1 = yes) | binary |
+
+## Load the data
+
+```{r load}
+hf <- read.csv("../data/CVD/heart_failure_clinical_records_dataset.csv")
+head(hf)
+```
+
+---
+
+# Part A — Meet the data
+
+## Structure and variable types
+
+```{r structure}
+dim(hf)
+str(hf)
+```
+
+Some variables are **continuous measurements** (age, ejection fraction,
+creatinine…); others are **binary flags** (diabetes, smoking, death event).
+PCA works on continuous numbers, so we separate them up front.
+
+```{r split-vars}
+# Continuous clinical measurements
+cont_vars <- c("age", "creatinine_phosphokinase", "ejection_fraction",
+               "platelets", "serum_creatinine", "serum_sodium")
+
+# Binary variables — used later to *interpret* PCA, not as PCA input
+bin_vars <- c("anaemia", "diabetes", "high_blood_pressure",
+              "sex", "smoking", "DEATH_EVENT")
+```
+
+We also **exclude `time`** (follow-up length in days). Its value is partly
+determined by *when* a patient died — feeding it into PCA and then colouring
+by death outcome would be circular reasoning.
+
+```{r summary}
+summary(hf[, cont_vars])
+```
+
+> **Question 1.1.** How many patients are in the dataset, and how many
+> continuous variables will we use for PCA? What does `ejection_fraction`
+> measure, and why might a value below 40 % be clinically worrying?
+
+> **Question 1.2.** From the `summary()` output, which variable has the
+> largest numerical range? Does a large range mean that variable is more
+> *biologically important*, or is it simply a consequence of the units in
+> which it is measured?
+
+## Spotting skewed distributions and log-transforming
+
+Right-skewed variables (a long right tail of very high values) can distort
+PCA — a handful of extreme patients would drag the axes. Let us inspect the
+two enzyme measurements.
+
+```{r skew-check, fig.width=10, fig.height=3.5}
+par(mfrow = c(1, 4))
+hist(hf$creatinine_phosphokinase, breaks = 40, col = "steelblue",
+     main = "CPK (original)", xlab = "mcg/L")
+hist(log(hf$creatinine_phosphokinase), breaks = 40, col = "darkorange",
+     main = "log(CPK)", xlab = "log mcg/L")
+hist(hf$serum_creatinine, breaks = 40, col = "steelblue",
+     main = "Serum creatinine (original)", xlab = "mg/dL")
+hist(log(hf$serum_creatinine), breaks = 40, col = "darkorange",
+     main = "log(Serum creatinine)", xlab = "log mg/dL")
+par(mfrow = c(1, 1))
+```
+
+The log transformation makes both distributions far more symmetric. We work
+with the log-transformed versions from here on.
+
+```{r log-transform}
+hf$log_cpk       <- log(hf$creatinine_phosphokinase)
+hf$log_creatinine <- log(hf$serum_creatinine)
+
+cont_clean <- c("age", "log_cpk", "ejection_fraction",
+                "platelets", "log_creatinine", "serum_sodium")
+```
+
+> **Question 1.3.** Why is it a good idea to log-transform heavily right-skewed
+> variables *before* PCA? Hint: think about what happens to the Euclidean
+> distance between patients when one variable spans a range of 1–7000 while
+> another spans 110–150.
+
+---
+
+# Part B — Why standardise before PCA?
+
+PCA finds the directions of **maximum variance**. If one variable has much
+larger numbers than another (e.g. platelet count in thousands vs. serum sodium
+in mEq/L), it will dominate the result simply because of its scale — not
+because it is more informative.
+
+```{r raw-sd}
+round(apply(hf[, cont_clean], 2, sd, na.rm = TRUE), 3)
+```
+
+```{r scale}
+X <- scale(hf[, cont_clean])    # standardise to mean 0, sd 1
+
+round(apply(X, 2, mean), 3)     # confirm: all ≈ 0
+round(apply(X, 2, sd),   3)     # confirm: all = 1
+```
+
+After standardisation every variable contributes on equal footing: we compare
+*patterns of variation*, not raw magnitudes.
+
+> **Question 2.1.** Before scaling, which variable has the largest standard
+> deviation? If we ran PCA on the raw numbers, which variable would likely
+> dominate PC1 — and would that reflect biology or just units?
+
+> **Question 2.2.** After standardisation, a patient has a value of +2 for
+> `ejection_fraction`. What does that mean in plain English — how does this
+> patient compare to the rest of the cohort?
+
+---
+
+# Part C — Running PCA
+
+## Computing the principal components
+
+`prcomp()` rotates the data so that the first axis (**PC1**) captures as much
+variance as possible, the second (**PC2**) captures as much of the *remaining*
+variance as possible, and so on. The total number of PCs equals the number of
+input variables (here, six).
+
+```{r pca}
+pca <- prcomp(X, scale. = FALSE)   # already scaled above
+summary(pca)
+```
+
+The row **Proportion of Variance** tells us how much of the total information
+each PC captures.
+
+## Scree plot — how many PCs matter?
+
+```{r scree, fig.width=6, fig.height=4}
+var_exp <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+barplot(var_exp,
+        names.arg = paste0("PC", seq_along(var_exp)),
+        col = "steelblue", border = NA,
+        ylab = "Variance explained (%)",
+        main = "Scree plot")
+```
+
+We can also plot the **cumulative** variance to decide how many PCs to retain.
+
+```{r cumvar, fig.width=6, fig.height=4}
+plot(cumsum(var_exp), type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of PCs", ylab = "Cumulative variance explained (%)",
+     main = "Cumulative variance explained", ylim = c(0, 100))
+abline(h = 80, lty = 2, col = "grey60")
+```
+
+> **Question 3.1.** How much variance (%) does PC1 alone explain? How many
+> PCs would you need to retain to capture at least 80 % of the total variance
+> in the dataset?
+
+> **Question 3.2.** The scree plot shows diminishing returns — each additional
+> PC explains less. Where does the curve flatten noticeably (the "elbow")?
+> What does this suggest about how many *independent* sources of variation
+> exist in these six measurements?
+
+---
+
+# Part D — Patients in PCA space
+
+## The score plot
+
+Each patient becomes a **single point** in PCA space. Points close together
+are clinically similar across all six measurements; points far apart differ
+substantially. Crucially, the PCA was computed without any knowledge of who
+died — we now colour the points by outcome to see whether the structure
+aligns with survival.
+
+```{r score-setup}
+scores <- as.data.frame(pca$x)
+scores$death <- factor(hf$DEATH_EVENT, levels = c(0, 1),
+                       labels = c("Survived", "Died"))
+```
+
+```{r score-plot, fig.width=6, fig.height=5}
+col_death <- ifelse(scores$death == "Died", "tomato", "steelblue")
+
+plot(scores$PC1, scores$PC2,
+     col = col_death, pch = 19, cex = 0.8,
+     xlab = "PC1", ylab = "PC2",
+     main = "PCA score plot — coloured by outcome")
+legend("topright", legend = c("Survived", "Died"),
+       col = c("steelblue", "tomato"), pch = 19, cex = 0.9)
+```
+
+> **Question 4.1.** Do patients who died tend to cluster in a specific region
+> of the PC1–PC2 plane? Is the separation between survivors and non-survivors
+> perfect, or is there considerable overlap? What does substantial overlap tell
+> us about the complexity of predicting heart failure outcomes from these
+> measurements alone?
+
+## Mapping individual clinical variables onto the PCA
+
+We can colour the same point cloud by any continuous measurement to reveal
+which variable "explains" the position of patients along each PC axis.
+
+```{r color-helper}
+# Helper: map numeric values to a red-white-blue gradient
+map_color <- function(x, n = 100) {
+  pal <- colorRampPalette(c("red", "white", "blue"))(n)
+  idx <- cut(x, breaks = n, labels = FALSE, include.lowest = TRUE)
+  pal[idx]
+}
+```
+
+```{r pca-clin, fig.width=10, fig.height=4.5}
+par(mfrow = c(1, 3))
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.7,
+     col = map_color(hf$ejection_fraction),
+     main = "Ejection fraction (%)", xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.7,
+     col = map_color(hf$log_creatinine),
+     main = "log(Serum creatinine)", xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.7,
+     col = map_color(hf$age),
+     main = "Age (years)", xlab = "PC1", ylab = "PC2")
+
+par(mfrow = c(1, 1))
+```
+
+*In all three plots: red = low values, blue = high values.*
+
+> **Question 4.2.** Looking at the plots coloured by ejection fraction and by
+> serum creatinine: do patients with low ejection fraction (red) sit on the
+> same side of PC1 as patients with *high* serum creatinine (blue), or the
+> opposite side? Recall that a failing heart pumps less blood to the kidneys,
+> which can cause creatinine to rise. Does the spatial arrangement make
+> clinical sense?
+
+> **Question 4.3.** Does age form a clear gradient along PC1 or PC2? Is it
+> surprising that age is not the *dominant* axis of variation in a cohort
+> where every patient already has advanced heart failure?
+
+---
+
+# Part E — What drives each PC? Loadings
+
+The **loadings** (stored in `pca$rotation`) tell us how much each original
+variable contributes to each PC. A large positive loading means patients with
+high values of that variable sit at the *positive* end of the PC; a large
+negative loading places them at the *negative* end.
+
+```{r loadings}
+round(pca$rotation[, 1:4], 3)
+```
+
+```{r loading-bars, fig.width=9, fig.height=4}
+par(mfrow = c(1, 2))
+
+barplot(sort(pca$rotation[, 1]),
+        horiz = TRUE, las = 1, col = "steelblue", border = NA,
+        main = "PC1 loadings", xlab = "Loading value")
+abline(v = 0, col = "grey40")
+
+barplot(sort(pca$rotation[, 2]),
+        horiz = TRUE, las = 1, col = "darkorange", border = NA,
+        main = "PC2 loadings", xlab = "Loading value")
+abline(v = 0, col = "grey40")
+
+par(mfrow = c(1, 1))
+```
+
+## Biplot — patients and variables together
+
+The **biplot** overlays the score plot with arrows showing each variable's
+direction and strength. Arrows pointing the same way indicate variables that
+increase together; opposite arrows indicate variables that move in opposite
+directions.
+
+```{r biplot, fig.width=7, fig.height=6}
+biplot(pca, scale = 0, cex = c(0.45, 0.9),
+       col = c("grey60", "tomato"),
+       main = "PCA biplot — patients and variable loadings")
+```
+
+> **Question 5.1.** Looking at the PC1 loading barplot, which variables have
+> the strongest positive and negative loadings? Based on these, propose a
+> biological interpretation for PC1: is it primarily an axis of *kidney
+> function*, *cardiac function*, or a contrast between the two?
+
+> **Question 5.2.** In the biplot, do the arrows for `ejection_fraction` and
+> `log_creatinine` point in roughly *opposite* directions? A failing heart
+> pumps less blood to the kidneys, causing creatinine to rise — so patients
+> with low ejection fraction often have high serum creatinine. Does the
+> geometry of the biplot reflect this clinical relationship?
+
+> **Question 5.3.** Which variables load most strongly on PC2? What might
+> PC2 represent? (Hint: look at which variables are *not* well captured by
+> PC1 and therefore have most of their signal in PC2.)
+
+---
+
+# Part F — Unsupervised clustering of patients
+
+So far we have only used `DEATH_EVENT` as a colour — the PCA itself was blind
+to outcomes. Now we ask: can we find groups of *similar* patients
+**without knowing who died**, using only their lab measurements?
+
+**K-means clustering** assigns each patient to one of *k* groups so that
+patients in the same group are as similar as possible. We apply it to the
+first four PCs (which already capture most of the variance).
+
+## Choosing the number of clusters
+
+The *within-cluster sum of squares* (WSS) measures how tight the clusters
+are. It always drops as *k* increases, so we look for the "elbow" — the point
+where adding more clusters gives diminishing returns.
+
+```{r elbow, fig.width=6, fig.height=4}
+set.seed(42)
+wss <- sapply(1:8, function(k) {
+  kmeans(pca$x[, 1:4], centers = k, nstart = 25)$tot.withinss
+})
+
+plot(1:8, wss, type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of clusters (k)",
+     ylab = "Total within-cluster sum of squares",
+     main = "Elbow plot for k-means")
+```
+
+> **Question 6.1.** The WSS always decreases as *k* grows — so we cannot
+> just maximise it. Where does the elbow appear in the curve? What value of
+> *k* offers a good balance between simplicity (few clusters) and fit (tight
+> clusters)?
+
+## Clustering with k = 2
+
+```{r kmeans}
+set.seed(42)
+km <- kmeans(pca$x[, 1:4], centers = 2, nstart = 25)
+scores$cluster <- as.factor(km$cluster)
+```
+
+```{r cluster-plot, fig.width=6, fig.height=5}
+col_cl <- c("1" = "#1f78b4", "2" = "#e66101")
+
+plot(scores$PC1, scores$PC2,
+     col = col_cl[scores$cluster], pch = 19, cex = 0.8,
+     xlab = "PC1", ylab = "PC2",
+     main = "K-means clusters (k = 2) in PCA space")
+legend("topright", legend = c("Cluster 1", "Cluster 2"),
+       col = col_cl, pch = 19, cex = 0.9)
+```
+
+## Are the unsupervised clusters enriched in death events?
+
+```{r cluster-vs-death}
+tab <- table(Cluster = scores$cluster, Outcome = scores$death)
+tab
+round(prop.table(tab, margin = 1) * 100, 1)
+```
+
+```{r cluster-bar, fig.width=5, fig.height=4.5}
+barplot(t(prop.table(tab, margin = 1)) * 100,
+        col = c("steelblue", "tomato"),
+        legend.text = c("Survived", "Died"),
+        args.legend = list(x = "topright", cex = 0.9),
+        ylab = "Patients (%)", xlab = "Cluster",
+        main = "Death rate by unsupervised cluster",
+        border = NA)
+```
+
+## Clinical profile of each cluster
+
+```{r cluster-profile, fig.width=10, fig.height=7}
+# Friendly labels for the plot
+pretty_names <- c("Age (years)", "log(CPK)", "Ejection fraction (%)",
+                  "Platelets (kplt/mL)", "log(Serum creatinine)", "Serum sodium (mEq/L)")
+
+par(mfrow = c(2, 3))
+for (i in seq_along(cont_clean)) {
+  boxplot(hf[[ cont_clean[i] ]] ~ scores$cluster,
+          col = c("#1f78b4", "#e66101"), border = "grey30",
+          main = pretty_names[i], xlab = "Cluster", ylab = "")
+}
+par(mfrow = c(1, 1))
+```
+
+> **Question 6.2.** Is one cluster substantially enriched for patients who
+> died? Looking at the clinical profile boxplots, which cluster has *lower*
+> ejection fraction and *higher* serum creatinine — and is that the same
+> cluster with more deaths?
+
+> **Question 6.3.** The clusters were defined purely by six lab measurements,
+> with no knowledge of who survived. What does it mean if unsupervised
+> clusters still align reasonably well with survival? Does this suggest that
+> routine blood tests carry clinically relevant prognostic information?
+
+---
+
+# Part G — Wrap-up
+
+```{r session}
+sessionInfo()
+```
+
+> **Question 7.1 (wrap-up).** In four or five sentences, summarise the key
+> findings: What are the main axes of variation among these heart failure
+> patients? Which clinical measurements drive those axes, and how do they
+> relate to each other biologically? Do patients who died occupy a distinct
+> region of PCA space? And what do the unsupervised clusters reveal about the
+> structure of the cohort?

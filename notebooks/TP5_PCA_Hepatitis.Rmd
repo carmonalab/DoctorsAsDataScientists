@@ -1,0 +1,555 @@
+---
+title: "TP5 — Principal Component Analysis (PCA)"
+subtitle: "Doctors as Data Scientists · Dimensionality Reduction and Patient Profiling"
+author: "Massimo Andreatta"
+date: "`r Sys.Date()`"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file, encoding=encoding,
+  output_file=file.path(dirname(input_file), '..', out_dir, 'TP5_PCA_Hepatitis.html'))})
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, fig.align = "center")
+```
+
+> **How to use this notebook.** You do **not** need any programming experience.
+> Read each short explanation, then press the green *play* button (▶) at the
+> top-right of each grey *code chunk* to run it. Look at the output, and answer
+> the **Questions** in the green boxes (write your answers in plain text under
+> each one). The goal is to *understand the data and the method*, not to
+> memorise code.
+
+---
+
+# Introduction to Principal Component Analysis
+
+## The problem: too many variables, too few dimensions
+
+In medicine we routinely measure many things about each patient — blood tests,
+vital signs, imaging findings. When there are six, ten, or fifty measurements
+per patient, it becomes impossible to *see* the data: you cannot draw a
+50-dimensional scatter plot. Yet a lot of information in those measurements is
+**redundant** — for example, two liver enzymes that always rise together carry
+roughly the same information.
+
+**Principal Component Analysis (PCA)** exploits this redundancy to compress
+many variables into a small number of new variables — the **principal
+components** — that still capture most of the interesting variation. Think of
+it as finding the best angle from which to photograph a 3-D sculpture: you
+lose one dimension, but if you choose the right angle you preserve the
+important structure.
+
+## What PCA actually does — step by step
+
+Imagine you have measured two things about each patient: ejection fraction and
+serum creatinine. You could plot every patient as a point in a 2-D scatter
+plot. PCA asks: *what single axis through this cloud of points captures the
+most spread?* That axis is **PC1**. A second axis, perpendicular to the first,
+captures the next most spread — that is **PC2**. Together they form a new
+coordinate system that is rotated relative to the original axes.
+
+```{r pca-intuition, fig.width=7, fig.height=5, echo=FALSE}
+set.seed(7)
+n  <- 120
+z1 <- rnorm(n); z2 <- rnorm(n, sd = 0.35)
+theta <- -40 * pi / 180
+x <- cos(theta) * z1 - sin(theta) * z2
+y <- sin(theta) * z1 + cos(theta) * z2
+
+pca_toy <- prcomp(cbind(x, y), scale. = FALSE)
+v1 <- pca_toy$rotation[, 1]
+v2 <- pca_toy$rotation[, 2]
+sc <- 1.5
+
+plot(x, y, pch = 19, col = adjustcolor("steelblue", alpha.f = 0.5), cex = 0.9,
+     xlab = "Measurement 1  (e.g. ALT)",
+     ylab = "Measurement 2  (e.g. AST)",
+     main = "PCA: finding new axes through the data cloud",
+     asp = 1)
+arrows(0, 0, sc * v1[1], sc * v1[2],
+       col = "red", lwd = 4, length = 0.15)
+arrows(0, 0, sc * v2[1], sc * v2[2],
+       col = "orange", lwd = 4, length = 0.15)
+text(sc * v1[1] * 1.18, sc * v1[2] * 1.18, "PC1", col = "red",    cex = 1.2, font = 2)
+text(sc * v2[1] * 1.45, sc * v2[2] * 1.45, "PC2", col = "orange", cex = 1.2, font = 2)
+```
+
+The red arrow (PC1) points in the direction of greatest spread — patients are
+most spread out along this axis. The orange arrow (PC2) is perpendicular to
+PC1 and captures the remaining spread.
+
+In this toy example we still have two dimensions, so nothing is gained yet.
+The real benefit appears when we have **many** variables (ten in our dataset):
+PCA finds the directions of greatest variance in that ten-dimensional space,
+and we can keep only the first two or three PCs — which together capture the
+majority of the information — and discard the rest. We compress ten dimensions
+into two while losing only a small fraction of information, making the data
+possible to visualise and interpret.
+
+## Key vocabulary
+
+| Term | Plain-language meaning |
+|---|---|
+| **Principal component (PC)** | A new axis through the data; a weighted combination of the original variables |
+| **Score** | A patient's coordinate on a PC — where they sit along that axis |
+| **Loading** | How much each original variable contributes to a PC (its "weight" on that axis) |
+| **Variance explained** | The % of total spread captured by a PC — larger means more informative |
+| **Scree plot** | A bar chart of variance explained by each PC, used to decide how many to keep |
+| **Biplot** | A combined plot showing both patient scores and variable loadings |
+
+## What PCA can — and cannot — do
+
+PCA is an **unsupervised** method: it looks only at the measurements, with no
+knowledge of clinical outcomes. It will find the directions of greatest
+variation, which may or may not align with what we care about clinically. When
+the main sources of biological variation *do* align with disease severity or
+prognosis, PCA makes that structure visible. When they do not (for instance,
+if the dominant variation is technical noise), PCA can mislead. Always
+interpret the components biologically before drawing conclusions.
+
+---
+
+# The dataset: hepatitis C blood panel
+
+Each row is one person who had a blood sample analysed. The data come from the
+[UCI HCV dataset](https://archive.ics.uci.edu/dataset/571/hcv+data), containing
+healthy **blood donors** and patients with hepatitis C at increasing stages of
+liver damage (**Hepatitis → Fibrosis → Cirrhosis**).
+
+The ten numeric columns are routine **laboratory tests**:
+
+| Code | Lab test | What it reflects |
+|------|----------|------------------|
+| ALB  | Albumin | Liver synthetic function (falls when liver fails) |
+| ALP  | Alkaline phosphatase | Bile ducts / liver |
+| ALT  | Alanine aminotransferase | Liver-cell damage (rises with inflammation) |
+| AST  | Aspartate aminotransferase | Liver-cell damage |
+| BIL  | Bilirubin | Liver clearance (rises in jaundice) |
+| CHE  | Cholinesterase | Liver synthetic function (falls when liver fails) |
+| CHOL | Cholesterol | Liver / metabolism |
+| CREA | Creatinine | Kidney function |
+| GGT  | Gamma-glutamyl transferase | Bile ducts / liver |
+| PROT | Total protein | Overall protein level |
+
+`Category` is the diagnosis and `Sex` is m/f.
+
+This dataset is particularly well suited to PCA: the ten tests are not
+independent (several measure related aspects of liver function), and disease
+severity follows an ordered progression — an ideal setting for PCA to reveal
+biological structure.
+
+## Load the data
+
+```{r load}
+hcv <- read.csv("../data/hcvdat0.csv", row.names = 1)
+head(hcv)
+```
+
+```{r setup-helpers}
+# Create a readable diagnosis label ordered by severity
+hcv$Group <- factor(gsub("^0.*", "Donor", hcv$Category),
+                    levels = c("Donor", "1=Hepatitis", "2=Fibrosis", "3=Cirrhosis"),
+                    labels = c("Donor", "Hepatitis", "Fibrosis", "Cirrhosis"))
+
+labs <- c("ALB","ALP","ALT","AST","BIL","CHE","CHOL","CREA","GGT","PROT")
+
+# Colour palette: blue (healthy) → red (severe)
+grp_cols <- c(Donor     = "#2166AC",
+              Hepatitis = "#92C5DE",
+              Fibrosis  = "#F4A582",
+              Cirrhosis = "#B2182B")
+```
+
+---
+
+# Part A — Meet the data
+
+## Size, groups, and missing values
+
+```{r structure}
+dim(hcv)
+table(hcv$Group)
+```
+
+```{r missing}
+colSums(is.na(hcv[, labs]))
+cat("Patients with at least one missing lab value:", sum(!complete.cases(hcv[, labs])), "\n")
+```
+
+Some patients are missing one or more lab values. PCA requires complete data,
+so we keep only patients with all ten measurements. We lose a small fraction of
+the cohort but keep the analysis straightforward.
+
+```{r complete}
+hcv_c <- hcv[complete.cases(hcv[, labs]), ]
+cat("Patients retained:", nrow(hcv_c), "\n")
+table(hcv_c$Group)
+```
+
+> **Question 1.1.** How many patients are in the dataset in total, and how many
+> remain after removing incomplete cases? Which disease group loses the most
+> patients to missing values — and can you guess why certain tests might be
+> missing more often than others?
+
+## Distributions and skewness
+
+Right-skewed variables distort PCA — extreme values in a few patients drag the
+axes. Let us check all ten tests.
+
+```{r histograms, fig.width=11, fig.height=7}
+par(mfrow = c(2, 5), mar = c(3, 3, 2, 1))
+for (v in labs) {
+  hist(hcv_c[[v]], breaks = 35, col = "steelblue", border = NA,
+       main = v, xlab = "")
+}
+par(mfrow = c(1, 1))
+```
+
+Several enzyme and bilirubin measurements (ALT, AST, BIL, GGT) are heavily
+right-skewed — the majority of patients cluster at low values but a few reach
+extreme highs. We apply a log-transformation to these before running PCA.
+
+```{r log-transform}
+hcv_c$log_ALT <- log(hcv_c$ALT)
+hcv_c$log_AST <- log(hcv_c$AST)
+hcv_c$log_BIL <- log(hcv_c$BIL)
+hcv_c$log_GGT <- log(hcv_c$GGT)
+
+labs_clean <- c("ALB","ALP","log_ALT","log_AST","log_BIL",
+                "CHE","CHOL","CREA","log_GGT","PROT")
+```
+
+```{r log-check, fig.width=11, fig.height=3.5}
+par(mfrow = c(1, 4))
+for (v in c("log_ALT","log_AST","log_BIL","log_GGT")) {
+  hist(hcv_c[[v]], breaks = 35, col = "darkorange", border = NA,
+       main = v, xlab = "")
+}
+par(mfrow = c(1, 1))
+```
+
+> **Question 1.2.** Which of the ten tests are most heavily right-skewed in
+> the original scale? Why might patients with cirrhosis drive the extreme
+> values in ALT, AST and GGT specifically — what do these tests measure?
+
+> **Question 1.3.** After log-transformation, do the distributions of ALT,
+> AST, BIL and GGT look more symmetric? Why does a more symmetric distribution
+> help PCA produce interpretable components?
+
+---
+
+# Part B — Why standardise before PCA?
+
+PCA finds directions of **maximum variance**. A variable measured in large
+numbers (e.g. creatinine in µmol/L) would dominate the result over one
+measured in small numbers (e.g. cholesterol in mmol/L), even if both carry
+equal biological information.
+
+```{r raw-sd}
+round(apply(hcv_c[, labs_clean], 2, sd, na.rm = TRUE), 3)
+```
+
+```{r scale}
+X <- scale(hcv_c[, labs_clean])   # z-score: mean 0, sd 1
+
+round(apply(X, 2, mean), 3)       # all ≈ 0
+round(apply(X, 2, sd),   3)       # all = 1
+```
+
+> **Question 2.1.** Before scaling, which variable has the largest standard
+> deviation? If we ran PCA without standardising, which variable would likely
+> dominate PC1 — and would that be biologically meaningful, or just an artefact
+> of units?
+
+> **Question 2.2.** We already log-transformed four tests. Does log-
+> transformation change the need for standardisation, or are both steps
+> necessary for different reasons?
+
+---
+
+# Part C — Running PCA
+
+## Computing the principal components
+
+```{r pca}
+pca <- prcomp(X, scale. = FALSE)   # already scaled
+summary(pca)
+```
+
+## Scree plot
+
+```{r scree, fig.width=6, fig.height=4}
+var_exp <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+barplot(var_exp,
+        names.arg = paste0("PC", seq_along(var_exp)),
+        col = "steelblue", border = NA,
+        ylab = "Variance explained (%)",
+        main = "Scree plot")
+```
+
+```{r cumvar, fig.width=6, fig.height=4}
+plot(cumsum(var_exp), type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of PCs", ylab = "Cumulative variance explained (%)",
+     main = "Cumulative variance explained", ylim = c(0, 100))
+abline(h = 80, lty = 2, col = "grey60")
+```
+
+> **Question 3.1.** How much variance does PC1 explain on its own? Given that
+> we have ten input variables, is it surprising that a single axis can capture
+> such a large fraction? What does this suggest about the redundancy among
+> these liver tests?
+
+> **Question 3.2.** How many PCs would you need to retain to explain at least
+> 80 % of the variance? Where is the elbow in the scree plot?
+
+---
+
+# Part D — Patients in PCA space
+
+## The score plot coloured by diagnosis
+
+Unlike in many datasets, here we **know** the true diagnosis of every patient.
+We colour the score plot by disease group to see whether PCA — which had no
+knowledge of the diagnosis — recovers the biological structure.
+
+```{r scores}
+scores <- as.data.frame(pca$x)
+scores$Group <- hcv_c$Group
+col_pts <- grp_cols[as.character(scores$Group)]
+```
+
+```{r score-plot, fig.width=7, fig.height=5.5}
+plot(scores$PC1, scores$PC2,
+     col = col_pts, pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "PCA score plot — coloured by diagnosis")
+legend("topright", legend = names(grp_cols), col = grp_cols,
+       pch = 19, cex = 0.85, pt.cex = 1.1)
+```
+
+> **Question 4.1.** Do the four diagnosis groups separate along PC1, PC2, or
+> both? Is the ordering of the groups along PC1 consistent with the biological
+> progression of liver disease (Donor → Hepatitis → Fibrosis → Cirrhosis)?
+
+> **Question 4.2.** Are the Donor and Cirrhosis groups well separated, or do
+> they overlap substantially? What about Hepatitis and Fibrosis — are they
+> easier or harder to distinguish? Does this reflect the clinical reality of
+> diagnosing intermediate stages of liver disease?
+
+## Mapping individual lab tests onto the PCA
+
+```{r color-helper}
+map_color <- function(x, n = 100) {
+  pal <- colorRampPalette(c("red", "white", "blue"))(n)
+  idx <- cut(x, breaks = n, labels = FALSE, include.lowest = TRUE)
+  pal[idx]
+}
+```
+
+We plot the same patient cloud coloured by selected lab values to see which
+measurements explain the position along each PC axis.
+
+```{r pca-labs-damage, fig.width=11, fig.height=4}
+par(mfrow = c(1, 3))
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col = map_color(hcv_c$log_ALT),
+     main = "log(ALT) — liver-cell damage",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col = map_color(hcv_c$log_GGT),
+     main = "log(GGT) — bile duct / liver",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col = map_color(hcv_c$log_BIL),
+     main = "log(BIL) — bilirubin / jaundice",
+     xlab = "PC1", ylab = "PC2")
+
+par(mfrow = c(1, 1))
+```
+
+```{r pca-labs-synthetic, fig.width=8, fig.height=4}
+par(mfrow = c(1, 2))
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col = map_color(hcv_c$ALB),
+     main = "ALB — liver synthetic function",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col = map_color(hcv_c$CHE),
+     main = "CHE — liver synthetic function",
+     xlab = "PC1", ylab = "PC2")
+
+par(mfrow = c(1, 1))
+```
+
+*In all plots: red = low values, blue = high values.*
+
+> **Question 4.3.** ALT, GGT and BIL **rise** with liver damage, while ALB
+> and CHE **fall** as the liver loses its synthetic function. Looking at the
+> colour gradients: do the "rise" tests (high = blue) and the "fall" tests
+> (high = blue) sit on the *same* side of PC1, or on *opposite* sides? What
+> does this tell you about the biological meaning of PC1?
+
+---
+
+# Part E — What drives each PC? Loadings
+
+The **loadings** reveal how much each lab test contributes to each PC and in
+which direction.
+
+```{r loadings}
+round(pca$rotation[, 1:4], 3)
+```
+
+```{r loading-bars, fig.width=9, fig.height=4}
+par(mfrow = c(1, 2))
+
+barplot(sort(pca$rotation[, 1]),
+        horiz = TRUE, las = 1, col = "steelblue", border = NA,
+        main = "PC1 loadings", xlab = "Loading value")
+abline(v = 0, col = "grey40")
+
+barplot(sort(pca$rotation[, 2]),
+        horiz = TRUE, las = 1, col = "darkorange", border = NA,
+        main = "PC2 loadings", xlab = "Loading value")
+abline(v = 0, col = "grey40")
+
+par(mfrow = c(1, 1))
+```
+
+## Biplot
+
+```{r biplot, fig.width=7, fig.height=6}
+biplot(pca, scale = 0, cex = c(0.4, 0.9),
+       col = c("grey70", "tomato"),
+       main = "PCA biplot — patients and variable loadings")
+```
+
+> **Question 5.1.** Which lab tests have the strongest loadings on PC1 — and
+> do the tests that *rise* with liver damage (ALT, AST, GGT, BIL) load in the
+> *opposite* direction from those that *fall* (ALB, CHE)? Does this confirm
+> your interpretation from Question 4.3?
+
+> **Question 5.2.** In the biplot, arrows pointing in the same direction
+> indicate correlated variables. Which pairs of tests are most strongly
+> correlated? Does this make biological sense — for example, are ALT and AST
+> (both markers of liver-cell damage) in a similar direction?
+
+> **Question 5.3.** Which variables contribute most to PC2? Based on those
+> loadings, what aspect of patient variation might PC2 be capturing — and why
+> might it be independent of the main liver-disease axis?
+
+---
+
+# Part F — Unsupervised clustering
+
+With the HCV dataset we can do something that is rarely possible in real
+practice: we know the true diagnosis, so we can directly evaluate how well
+**unsupervised** clustering (which ignores the labels) recovers the biological
+groups.
+
+## Elbow plot
+
+```{r elbow, fig.width=6, fig.height=4}
+set.seed(42)
+npc <- 4
+data <- pca$x[,1:npc]
+
+wss <- sapply(1:8, function(k) {
+  kmeans(data, centers = k, nstart = 25)$tot.withinss
+})
+
+plot(1:8, wss, type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of clusters (k)",
+     ylab = "Total within-cluster sum of squares",
+     main = "Elbow plot for k-means")
+```
+
+> **Question 6.1.** We have four known disease groups. Does the elbow plot
+> suggest *k* = 4 as a natural number of clusters, or does the curve flatten
+> earlier? What does this tell us about whether the four clinical groups
+> form truly distinct clusters in the measurement space?
+
+## Clustering with k = 2
+
+```{r kmeans}
+set.seed(42)
+k = 2
+
+data <- pca$x[,1:npc]
+km   <- kmeans(data, centers = k, nstart = 25)
+scores$cluster <- as.factor(km$cluster)
+```
+
+```{r cluster-plot, fig.width=7, fig.height=5.5}
+cl_cols <- c("1" = "#1b9e77", "2" = "#d95f02")
+
+plot(scores$PC1, scores$PC2,
+     col = cl_cols[scores$cluster], pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "K-means clusters (k = 2) in PCA space")
+legend("topright", legend = paste("Cluster", 1:2),
+       col = cl_cols, pch = 19, cex = 0.85)
+```
+
+## How well do clusters match the known diagnoses?
+
+```{r confusion}
+tab <- table(Cluster = scores$cluster, Diagnosis = scores$Group)
+tab
+```
+
+```{r confusion-pct}
+round(prop.table(tab, margin = 1) * 100, 1)
+```
+
+```{r cluster-bar, fig.width=7, fig.height=4.5}
+barplot(t(prop.table(tab, margin = 1)) * 100,
+        col  = grp_cols, border = NA,
+        legend.text = names(grp_cols),
+        args.legend = list(x = "topright", cex = 0.85),
+        ylab = "Patients (%)", xlab = "Cluster",
+        main = "Diagnosis composition of each k-means cluster")
+```
+
+> **Question 6.2.** Are any clusters highly enriched for a single diagnosis
+> (e.g. one cluster = mostly Cirrhosis)? Which clinical groups are most
+> cleanly separated, and which tend to be mixed together across clusters?
+
+> **Question 6.3.** The clustering algorithm had no access to the diagnosis
+> labels — it worked only from the ten lab values. Yet it partially recovers
+> the clinical groups. What does this tell us about the information content of
+> routine blood tests for staging liver disease?
+
+---
+
+# Part G — Wrap-up
+
+```{r session}
+sessionInfo()
+```
+
+> **Question 7.1 (wrap-up).** In four or five sentences, summarise the
+> journey: How much of the variation in ten lab tests can be captured by just
+> two or three axes? What do those axes represent biologically? Does the
+> disease progression (Donor → Hepatitis → Fibrosis → Cirrhosis) appear as a
+> gradient in PCA space, and which specific tests drive that gradient? What
+> does the clustering analysis add to this picture?

@@ -1,0 +1,767 @@
+---
+title: "TP5 — Principal Component Analysis (PCA)"
+subtitle: "Doctors as Data Scientists · Molecular Subtypes of Breast Cancer"
+author: "Massimo Andreatta"
+date: "`r Sys.Date()`"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file, encoding=encoding,
+  output_file=file.path(dirname(input_file), '..', out_dir, 'TP5_PCA_BRCA_PAM50.html'))})
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, fig.align = "center")
+```
+
+> **How to use this notebook.** You do **not** need any programming experience.
+> Read each short explanation, then press the green *play* button (▶) at the
+> top-right of each grey *code chunk* to run it. Look at the output, and answer
+> the **Questions** in the green boxes (write your answers in plain text under
+> each one). The goal is to *understand the data and the method*, not to
+> memorise code.
+
+---
+
+# Introduction to Principal Component Analysis
+
+## The problem: too many variables, too few dimensions
+
+Modern medicine no longer measures only a handful of things per patient.
+In oncology, it is now possible to measure the activity level of **every
+gene in a tumour** — typically more than 20,000 genes — from a single biopsy.
+This wealth of information is extraordinary, but it creates a problem:
+you cannot draw a 20,000-dimensional scatter plot. Even with only 50 genes
+you cannot visualise all the data at once.
+
+Yet a lot of information in those measurements is **redundant**: genes in
+the same biological pathway tend to rise and fall together. **Principal
+Component Analysis (PCA)** exploits this redundancy to compress many
+variables into a small number of new variables — the **principal
+components** — that still capture most of the interesting variation.
+
+## What PCA actually does — step by step
+
+Imagine you have measured the activity of two genes in each tumour sample.
+You could plot every sample as a point in a 2-D scatter plot. PCA asks:
+*what single axis through this cloud of points captures the most spread?*
+That axis is **PC1**. A second axis, perpendicular to the first, captures
+the next most spread — that is **PC2**. Together they form a new coordinate
+system rotated relative to the original axes.
+
+```{r pca-intuition, fig.width=7, fig.height=5, echo=FALSE}
+set.seed(7)
+n  <- 120
+z1 <- rnorm(n); z2 <- rnorm(n, sd = 0.35)
+theta <- -40 * pi / 180
+x <- cos(theta) * z1 - sin(theta) * z2
+y <- sin(theta) * z1 + cos(theta) * z2
+
+pca_toy <- prcomp(cbind(x, y), scale. = FALSE)
+v1 <- pca_toy$rotation[, 1]
+v2 <- pca_toy$rotation[, 2]
+sc <- 1.5
+
+plot(x, y, pch = 19, col = adjustcolor("steelblue", alpha.f = 0.5), cex = 0.9,
+     xlab = "Gene 1 expression  (e.g. ESR1)",
+     ylab = "Gene 2 expression  (e.g. KRT5)",
+     main = "PCA: finding new axes through the data cloud",
+     asp = 1)
+arrows(0, 0, sc * v1[1], sc * v1[2],
+       col = "red", lwd = 4, length = 0.15)
+arrows(0, 0, sc * v2[1], sc * v2[2],
+       col = "orange", lwd = 4, length = 0.15)
+text(sc * v1[1] * 1.18, sc * v1[2] * 1.18, "PC1", col = "red",    cex = 1.2, font = 2)
+text(sc * v2[1] * 1.45, sc * v2[2] * 1.45, "PC2", col = "orange", cex = 1.2, font = 2)
+```
+
+The red arrow (PC1) points in the direction of greatest spread — tumour
+samples are most spread out along this axis. The orange arrow (PC2) is
+perpendicular to PC1 and captures the remaining spread.
+
+The real benefit appears when we have **many** variables. PCA finds the
+directions of greatest variance in the N-dimensional space and we can keep
+only the first two or three PCs — which together capture the majority of
+the information — and discard the rest. We compress 50 dimensions into two
+while losing only a small fraction of information, making the data possible
+to visualise and interpret.
+
+## Key vocabulary
+
+| Term | Plain-language meaning |
+|---|---|
+| **Principal component (PC)** | A new axis through the data; a weighted combination of the original variables |
+| **Score** | A tumour's coordinate on a PC — where it sits along that axis |
+| **Loading** | How much each original gene contributes to a PC (its "weight" on that axis) |
+| **Variance explained** | The % of total spread captured by a PC — larger means more informative |
+| **Scree plot** | A bar chart of variance explained by each PC, used to decide how many to keep |
+| **Biplot** | A combined plot showing both tumour scores and gene loadings |
+
+## What PCA can — and cannot — do
+
+PCA is an **unsupervised** method: it looks only at the measurements, with
+no knowledge of clinical labels. It will find the directions of greatest
+variation, which may or may not align with what we care about clinically.
+When the main sources of biological variation *do* align with cancer
+subtype or prognosis, PCA makes that structure visible. Always interpret
+the components biologically before drawing conclusions.
+
+---
+
+# The dataset: breast cancer gene expression (TCGA-BRCA)
+
+## Background: breast cancer is not one disease
+
+For decades, breast cancer was treated largely as a single disease. In the
+early 2000s, gene-expression profiling revealed that breast cancer
+comprises at least **four molecularly distinct subtypes** with very
+different biology, prognosis, and treatment response:
+
+| Subtype | Key biology | Hormone receptors | Prognosis |
+|---|---|---|---|
+| **Luminal A** (LumA) | ER/PR-positive, low proliferation | ER+, PR+ | Best |
+| **Luminal B** (LumB) | ER/PR-positive, higher proliferation | ER+/−, PR+/− | Intermediate |
+| **HER2-enriched** (Her2) | HER2 gene amplification | HER2+, often ER− | Variable |
+| **Basal-like** (Basal) | Triple-negative, high genomic instability | ER−, PR−, HER2− | Worst |
+| **Normal-like** | Gene pattern resembles normal breast tissue | Variable | Intermediate |
+
+The **PAM50** test (Parker *et al.* 2009, *J Clin Oncol*) is a clinical
+assay that measures 50 carefully selected genes and assigns each tumour to
+one of these subtypes. It is used clinically to guide treatment decisions
+and predict the benefit of chemotherapy.
+
+## The 50 PAM50 genes and what they measure
+
+The 50 genes span several biological programmes:
+
+| Biological role | Key genes |
+|---|---|
+| Oestrogen / hormone signalling | *ESR1*, *PGR*, *NAT1*, *FOXA1*, *BCL2*, *SLC39A6* |
+| HER2 / growth factor signalling | *ERBB2*, *GRB7*, *FGFR4*, *MMP11* |
+| Basal / myoepithelial markers | *KRT5*, *KRT14*, *KRT17*, *EGFR*, *CDH3*, *FOXC1* |
+| Cell proliferation | *MKI67*, *CCNB1*, *CCNE1*, *CDC6*, *CDC20*, *RRM2*, *BIRC5* |
+| Other structural / signalling | *MDM2*, *MYC*, *MELK*, *CENPF*, … |
+
+Expression values are on a **log₂ scale** (log₂ of normalised RNA-seq
+counts). All 50 genes are already on the same numeric scale, so no further
+log-transformation is needed. We will still need to **standardise** them
+before PCA (see Part B).
+
+## The data
+
+The dataset contains **522 primary breast cancer samples** from The Cancer
+Genome Atlas (TCGA-BRCA), each with:
+- Expression of the 50 PAM50 genes (continuous, log₂-normalised)
+- PAM50 subtype label (`pam50`)
+- Clinical variables: oestrogen receptor status (`er_status`), HER2 status
+  (`her2_status`), progesterone receptor status (`pr_status`), age, and
+  disease stage
+
+## Load the data
+
+```{r load}
+brca <- read.csv("../data/brca_pam50.csv", row.names = 1)
+head(brca[, 1:8])   # show first few columns
+```
+
+```{r setup-labels}
+# Gene expression columns
+gene_cols <- colnames(brca)[7:56]
+
+# Colour palette for PAM50 subtypes
+subtype_cols <- c(
+  LumA       = "#1f77b4",   # blue — best prognosis
+  LumB       = "#aec7e8",   # light blue
+  Her2       = "#ff7f0e",   # orange
+  Basal      = "#d62728",   # red — worst prognosis
+  NormalLike = "#7f7f7f"    # grey
+)
+```
+
+---
+
+# Part A — Meet the data
+
+## Size and subtype distribution
+
+```{r structure}
+dim(brca)
+cat("Samples per PAM50 subtype:\n")
+table(brca$pam50)
+```
+
+```{r subtype-bar, fig.width=6, fig.height=4}
+counts <- table(brca$pam50)
+barplot(counts[c("LumA","LumB","Her2","Basal","NormalLike")],
+        col   = subtype_cols[c("LumA","LumB","Her2","Basal","NormalLike")],
+        border = NA,
+        ylab  = "Number of tumours",
+        main  = "PAM50 subtype distribution (TCGA-BRCA)")
+```
+
+> **Question 1.1.** How many tumour samples are in the dataset? Which is
+> the most common PAM50 subtype, and which is the rarest? Does the
+> prevalence of Luminal A tumours in this dataset surprise you, given that
+> ER-positive breast cancer is the most common type diagnosed clinically?
+
+## Hormone receptor and HER2 status
+
+The PAM50 molecular subtypes were derived from gene expression, but they
+should correspond closely to the clinical receptor status measured in
+routine pathology.
+
+```{r receptor-table}
+cat("ER status by PAM50 subtype:\n")
+print(table(brca$pam50, brca$er_status))
+
+cat("\nHER2 status by PAM50 subtype:\n")
+print(table(brca$pam50, brca$her2_status))
+```
+
+```{r receptor-plots, fig.width=10, fig.height=4.5}
+subtype_order <- c("LumA", "LumB", "Her2", "Basal", "NormalLike")
+
+# ER status — keep Positive / Negative; collapse rare categories
+er_clean  <- ifelse(brca$er_status  %in% c("Positive","Negative"), brca$er_status,  NA)
+her2_clean <- ifelse(brca$her2_status %in% c("Positive","Negative"), brca$her2_status, NA)
+
+tab_er   <- table(factor(brca$pam50, levels = subtype_order),
+                  factor(er_clean,   levels = c("Positive","Negative")))
+tab_her2 <- table(factor(brca$pam50, levels = subtype_order),
+                  factor(her2_clean, levels = c("Positive","Negative")))
+
+er_pct   <- prop.table(tab_er,   margin = 1) * 100
+her2_pct <- prop.table(tab_her2, margin = 1) * 100
+
+er_cols   <- c(Positive = "#e41a1c", Negative = "#bdbdbd")
+her2_cols <- c(Positive = "#ff7f00", Negative = "#bdbdbd")
+
+par(mfrow = c(1, 2))
+
+barplot(t(er_pct),
+        col    = er_cols, border = NA,
+        beside = FALSE,
+        legend.text = c("ER+", "ER−"),
+        args.legend = list(x = "topright", cex = 0.9,
+                           fill = er_cols, border = NA),
+        ylab = "Tumours (%)", xlab = "PAM50 subtype",
+        main = "ER status by molecular subtype",
+        ylim = c(0, 115))
+
+barplot(t(her2_pct),
+        col    = her2_cols, border = NA,
+        beside = FALSE,
+        legend.text = c("HER2+", "HER2−"),
+        args.legend = list(x = "topright", cex = 0.9,
+                           fill = her2_cols, border = NA),
+        ylab = "Tumours (%)", xlab = "PAM50 subtype",
+        main = "HER2 status by molecular subtype",
+        ylim = c(0, 115))
+
+par(mfrow = c(1, 1))
+```
+
+> **Question 1.2.** Are Luminal A and B tumours predominantly ER-positive?
+> Are HER2-enriched tumours predominantly HER2-positive by IHC/FISH? Are
+> Basal-like tumours predominantly ER-negative and HER2-negative (i.e.
+> triple-negative)? What does this correspondence — or any discordance —
+> tell you about the relationship between the molecular subtype (RNA-based)
+> and routine pathology testing (protein-based)?
+
+## Distributions of key gene markers
+
+Let us look at the distribution of a few biologically informative genes
+across the dataset.
+
+```{r key-gene-hist, fig.width=10, fig.height=4}
+key_genes <- c("ESR1", "ERBB2", "KRT5", "MKI67")
+par(mfrow = c(1, 4), mar = c(4, 3, 3, 1))
+for (g in key_genes) {
+  hist(brca[[g]], breaks = 30, col = "steelblue", border = NA,
+       main = g, xlab = "log₂ expression")
+}
+par(mfrow = c(1, 1))
+```
+
+*ESR1* encodes the oestrogen receptor; *ERBB2* encodes HER2; *KRT5* is a
+basal cytokeratin; *MKI67* (Ki-67) measures cell proliferation.
+
+> **Question 1.3.** Do any of these four genes show a **bimodal**
+> distribution (two peaks rather than one)? What would a bimodal
+> distribution suggest about the tumour population — could it reflect a
+> mixture of two molecularly distinct groups?
+
+## Gene–gene correlation
+
+Genes in the same biological pathway tend to be co-expressed. We can
+visualise this with a correlation heatmap.
+
+```{r corr-heatmap, fig.width=8, fig.height=7}
+cor_mat  <- cor(brca[, gene_cols], use = "complete.obs")
+col_heat <- colorRampPalette(c("#4393c3", "white", "#d6604d"))(100)
+
+# Hierarchical clustering to reorder genes so co-expressed blocks appear together
+gene_dist <- as.dist(1 - cor_mat)
+gene_clust <- hclust(gene_dist, method = "average")
+gene_order <- gene_clust$order
+
+heatmap(cor_mat[gene_order, gene_order],
+        Rowv = NA, Colv = NA,      # order already set; suppress re-clustering
+        col  = col_heat,
+        scale = "none",
+        margins = c(6, 6),
+        cexRow = 0.6, cexCol = 0.6,
+        main = "Gene–gene correlation (50 PAM50 genes, clustered)")
+```
+
+> **Question 1.4.** After hierarchical clustering, genes with similar
+> expression patterns across tumours are grouped together and appear as
+> red blocks along the diagonal. Can you identify at least two distinct
+> blocks? (Hint: look for a cluster containing *ESR1*, *PGR*, *FOXA1*
+> and another containing *MKI67*, *CCNB1*, *RRM2*.) What biological
+> programme does each block represent, and why would genes in the same
+> programme tend to be co-expressed?
+
+---
+
+# Part B — Why standardise before PCA?
+
+PCA finds the directions of **maximum variance**. If one gene has a much
+larger spread than another, it will dominate the PCA result simply because
+of its larger variance — not because it is more biologically informative.
+
+```{r raw-sd}
+gene_sds <- apply(brca[, gene_cols], 2, sd, na.rm = TRUE)
+cat("Standard deviation of each gene (before scaling):\n")
+print(round(sort(gene_sds, decreasing = TRUE), 2))
+```
+
+```{r sd-barplot, fig.width=9, fig.height=4}
+barplot(sort(gene_sds, decreasing = TRUE),
+        las = 2, cex.names = 0.6,
+        col = "steelblue", border = NA,
+        ylab = "Standard deviation",
+        main = "Gene expression variability across 522 tumours")
+```
+
+```{r scale}
+X <- scale(brca[, gene_cols])    # standardise to mean 0, sd 1
+round(apply(X, 2, mean), 3)[1:5] # confirm: first 5 means ≈ 0
+round(apply(X, 2, sd),   3)[1:5] # confirm: first 5 sds = 1
+```
+
+After standardisation every gene contributes on equal footing: we compare
+*patterns of variation across tumours*, not raw expression magnitudes.
+
+> **Question 2.1.** Before scaling, which gene has the largest standard
+> deviation? Would it be fair to let this gene dominate PC1 just because
+> it happens to vary more than others — or should every gene have equal
+> weight in finding the major axes of biological variation?
+
+> **Question 2.2.** Note that the data are already on a log₂ scale
+> (range ≈ 0–18), so the *units* are already harmonised. Yet the standard
+> deviations still differ by a factor of ~5 across genes. Does this mean
+> log-transformation is enough on its own, or is standardisation a
+> separate and necessary step?
+
+---
+
+# Part C — Running PCA
+
+## Computing the principal components
+
+`prcomp()` rotates the data so that PC1 captures as much variance as
+possible, PC2 captures as much of the *remaining* variance as possible,
+and so on. With 50 input genes, we get 50 principal components in total.
+
+```{r pca}
+pca <- prcomp(X, scale. = FALSE)   # already scaled above
+summary(pca)$importance[, 1:8]     # show first 8 PCs
+```
+
+## Scree plot — how many PCs matter?
+
+```{r scree, fig.width=7, fig.height=4}
+var_exp <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+barplot(var_exp[1:15],
+        names.arg = paste0("PC", 1:15),
+        col = "steelblue", border = NA,
+        ylab = "Variance explained (%)",
+        main = "Scree plot (first 15 PCs)")
+```
+
+```{r cumvar, fig.width=6, fig.height=4}
+plot(cumsum(var_exp), type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of PCs", ylab = "Cumulative variance explained (%)",
+     main = "Cumulative variance explained", ylim = c(0, 100))
+abline(h = 80, lty = 2, col = "grey60")
+```
+
+> **Question 3.1.** How much variance (%) does PC1 alone explain? Given
+> that we started with 50 genes, is it surprising that a single axis
+> can capture such a large fraction of the total variation? What does
+> this suggest about the redundancy among the 50 PAM50 genes?
+
+> **Question 3.2.** How many PCs are needed to capture at least 80 % of
+> the total variance? Where does the scree plot show an obvious "elbow"?
+> What does this suggest about how many truly independent sources of
+> variation exist in these 50 genes?
+
+---
+
+# Part D — Tumours in PCA space
+
+## The score plot coloured by PAM50 subtype
+
+Each tumour becomes a **single point** in PCA space. Tumours close
+together have similar gene expression profiles; tumours far apart are
+molecularly distinct. Crucially, the PCA was computed with **no knowledge
+of the subtype labels** — we now colour the points by subtype to see
+whether PCA rediscovers the biological structure.
+
+```{r scores}
+scores <- as.data.frame(pca$x)
+scores$subtype <- factor(brca$pam50,
+                         levels = c("LumA","LumB","Her2","Basal","NormalLike"))
+col_pts <- subtype_cols[as.character(scores$subtype)]
+```
+
+```{r score-plot, fig.width=7, fig.height=5.5}
+plot(scores$PC1, scores$PC2,
+     col  = col_pts, pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "PCA score plot — coloured by PAM50 subtype")
+legend("topright",
+       legend = names(subtype_cols),
+       col    = subtype_cols,
+       pch = 19, cex = 0.85, pt.cex = 1.1)
+```
+
+> **Question 4.1.** Do the five PAM50 subtypes separate in PCA space?
+> Which subtypes occupy the most distinct, non-overlapping regions? Which
+> subtypes show the most overlap? Is this consistent with the clinical
+> observation that Luminal A and Luminal B tumours are biologically more
+> similar to each other than to Basal-like tumours?
+
+> **Question 4.2.** Along which axis (PC1 or PC2, or both) do the Luminal
+> and Basal tumours separate most clearly? Where do HER2-enriched tumours
+> sit relative to these two poles? Does the arrangement suggest that the
+> major axis of variation in breast cancer gene expression corresponds to
+> the ER+/ER− distinction?
+
+## Mapping individual genes onto the PCA
+
+We colour the same score plot by the expression of specific marker genes
+to reveal which genes explain tumour positions along each PC axis.
+
+```{r color-helper}
+map_color <- function(x, n = 100) {
+  pal <- colorRampPalette(c("navy", "white", "firebrick"))(n)
+  idx <- cut(x, breaks = n, labels = FALSE, include.lowest = TRUE)
+  pal[idx]
+}
+```
+
+### Hormone-receptor genes
+
+```{r pca-hr, fig.width=11, fig.height=4}
+par(mfrow = c(1, 3))
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col  = map_color(brca$ESR1),
+     main = "ESR1 (oestrogen receptor gene)",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col  = map_color(brca$PGR),
+     main = "PGR (progesterone receptor gene)",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col  = map_color(brca$FOXA1),
+     main = "FOXA1 (luminal transcription factor)",
+     xlab = "PC1", ylab = "PC2")
+
+par(mfrow = c(1, 1))
+```
+
+### Basal and HER2 marker genes
+
+```{r pca-basal-her2, fig.width=11, fig.height=4}
+par(mfrow = c(1, 3))
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col  = map_color(brca$KRT5),
+     main = "KRT5 (basal cytokeratin)",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col  = map_color(brca$ERBB2),
+     main = "ERBB2 (HER2 gene)",
+     xlab = "PC1", ylab = "PC2")
+
+plot(scores$PC1, scores$PC2, pch = 19, cex = 0.6,
+     col  = map_color(brca$MKI67),
+     main = "MKI67 (proliferation marker, Ki-67)",
+     xlab = "PC1", ylab = "PC2")
+
+par(mfrow = c(1, 1))
+```
+
+*In all plots: navy = low expression, red = high expression.*
+
+> **Question 4.3.** Looking at the ESR1 and KRT5 plots: do tumours with
+> **high ESR1** (red) sit on the same side of PC1 as tumours with **high
+> KRT5** (red), or on *opposite* sides? ESR1 is the gene encoding the
+> oestrogen receptor, which drives growth in Luminal tumours; KRT5 is a
+> structural protein expressed in basal/myoepithelial cells. Does the
+> geometry of the PCA confirm that these two programmes are biologically
+> opposed?
+
+> **Question 4.4.** Where do tumours with high *ERBB2* expression sit in
+> PCA space? Is ERBB2 expression primarily driving the PC1 axis (the
+> main Luminal vs Basal axis), or does it contribute more to a different
+> direction? Based on what you know about HER2-positive breast cancer,
+> would you expect HER2-enriched tumours to cluster with Luminal or with
+> Basal-like tumours?
+
+> **Question 4.5.** *MKI67* (which encodes Ki-67, a widely used clinical
+> proliferation marker) is elevated in which region of PCA space? Is
+> proliferation higher in Luminal A or Luminal B tumours? This mirrors a
+> key clinical difference between the two Luminal subtypes — Luminal B is
+> more proliferative and carries a worse prognosis.
+
+---
+
+# Part E — What drives each PC? Loadings
+
+The **loadings** (in `pca$rotation`) tell us how much each gene contributes
+to each PC. A large positive loading means that tumours with high expression
+of that gene sit at the *positive* end of the PC; a large negative loading
+places them at the *negative* end.
+
+```{r loadings-table}
+# Top 10 genes by absolute loading on PC1 and PC2
+top_pc1 <- sort(pca$rotation[, 1])[c(1:5, 46:50)]   # 5 most negative, 5 most positive
+top_pc2 <- sort(pca$rotation[, 2])[c(1:5, 46:50)]
+cat("Top genes on PC1:\n"); print(round(top_pc1, 3))
+cat("\nTop genes on PC2:\n"); print(round(top_pc2, 3))
+```
+
+```{r loading-bars, fig.width=10, fig.height=5}
+n_show <- 10   # top 5 positive + top 5 negative
+
+pick_top <- function(loadings, n) {
+  s <- sort(loadings)
+  c(head(s, n %/% 2), tail(s, n %/% 2))
+}
+
+par(mfrow = c(1, 2))
+
+top1 <- pick_top(pca$rotation[, 1], n_show)
+barplot(top1, horiz = TRUE, las = 1, cex.names = 0.85,
+        col = ifelse(top1 > 0, "steelblue", "tomato"), border = NA,
+        main = "PC1 — top 10 genes", xlab = "Loading value")
+abline(v = 0, col = "grey40")
+
+top2 <- pick_top(pca$rotation[, 2], n_show)
+barplot(top2, horiz = TRUE, las = 1, cex.names = 0.85,
+        col = ifelse(top2 > 0, "darkorange", "tomato"), border = NA,
+        main = "PC2 — top 10 genes", xlab = "Loading value")
+abline(v = 0, col = "grey40")
+
+par(mfrow = c(1, 1))
+```
+
+## Biplot — tumours and key genes together
+
+The **biplot** overlays tumour positions (dots) with arrows for a hand-picked
+panel of biologically important genes. Arrows pointing in the same direction
+indicate genes that increase together; opposite arrows indicate genes that move
+in opposite directions across tumours.
+
+```{r biplot, fig.width=8, fig.height=7}
+# Hand-picked panel covering the main biological axes
+panel_genes <- c("ESR1", "PGR", "FOXA1", "NAT1",   # hormone / luminal
+                 "KRT5", "KRT14", "EGFR",            # basal
+                 "ERBB2", "GRB7",                    # HER2 amplicon
+                 "MKI67")                            # proliferation
+
+pca_sub          <- pca
+pca_sub$rotation <- pca$rotation[panel_genes, , drop = FALSE]
+
+# xlabs = "." replaces each sample label with a dot
+biplot(pca_sub, scale = 0,
+       xlabs = rep(".", nrow(pca$x)),
+       cex   = c(3.0, 0.9),
+       col   = c("grey50", "tomato"),
+       main  = "Biplot — PAM50 tumours and key gene loadings")
+```
+
+> **Question 5.1.** Looking at the PC1 loading barplot: which genes have
+> the strongest **positive** loadings, and which have the strongest
+> **negative** loadings? Based on their known biology, propose a plain-
+> English interpretation for PC1: is it primarily an axis of *hormone
+> signalling*, *basal identity*, or a contrast between the two?
+
+> **Question 5.2.** In the biplot, do the arrows for hormone-receptor
+> genes (*ESR1*, *PGR*, *FOXA1*) and basal markers (*KRT5*, *KRT14*,
+> *KRT17*) point in roughly *opposite* directions? Luminal tumours are
+> ER-positive with high hormone signalling; Basal-like tumours are
+> ER-negative with high expression of basal keratins. Does the biplot
+> geometry reflect this biological opposition?
+
+> **Question 5.3.** Which genes load most strongly on PC2? Based on those
+> genes, what biological programme might PC2 be capturing? (Hint: look at
+> *ERBB2*, *GRB7*, and *MKI67* — the HER2 amplicon genes and the
+> proliferation marker.)
+
+---
+
+# Part F — Unsupervised clustering of tumours
+
+We know the PAM50 subtype label for every tumour. Now we ask: can we
+**rediscover** these subtypes **without** using the labels — only from the
+50 gene expression values?
+
+**K-means clustering** assigns each tumour to one of *k* groups so that
+tumours in the same group are as similar as possible in PCA space. Because
+we already know the true subtypes, we can directly evaluate how well
+unsupervised clustering matches the biology.
+
+## Choosing the number of clusters (elbow plot)
+
+```{r elbow, fig.width=6, fig.height=4}
+set.seed(42)
+npc <- 5    # use first 5 PCs for clustering
+
+wss <- sapply(1:10, function(k) {
+  kmeans(pca$x[, 1:npc], centers = k, nstart = 25)$tot.withinss
+})
+
+plot(1:10, wss, type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of clusters (k)",
+     ylab = "Total within-cluster sum of squares",
+     main = "Elbow plot for k-means")
+```
+
+> **Question 6.1.** There are five known PAM50 subtypes (though
+> Normal-like has only 8 samples). Does the elbow plot suggest *k* = 5 as
+> a clear inflection point, or does the curve flatten earlier? What might
+> this tell us about whether all five subtypes form truly distinct clusters
+> in 50-gene expression space?
+
+## Clustering with k = 4
+
+We choose *k* = 4 to match the four major clinical subtypes (LumA, LumB,
+Her2, Basal), setting aside the rare Normal-like category.
+
+```{r kmeans}
+set.seed(42)
+k <- 4
+km <- kmeans(pca$x[, 1:npc], centers = k, nstart = 25)
+scores$cluster <- as.factor(km$cluster)
+```
+
+```{r cluster-plot, fig.width=7, fig.height=5.5}
+cl_cols <- c("1" = "#e41a1c", "2" = "#377eb8",
+             "3" = "#4daf4a", "4" = "#984ea3")
+
+plot(scores$PC1, scores$PC2,
+     col = cl_cols[scores$cluster], pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "K-means clusters (k = 4) in PCA space")
+legend("topright", legend = paste("Cluster", 1:4),
+       col = cl_cols, pch = 19, cex = 0.85)
+```
+
+## How well do the unsupervised clusters match PAM50 subtypes?
+
+```{r confusion}
+tab <- table(Cluster = scores$cluster, PAM50 = scores$subtype)
+tab
+```
+
+```{r confusion-pct}
+cat("Row percentages (% of each cluster made up of each subtype):\n")
+round(prop.table(tab, margin = 1) * 100, 1)
+```
+
+```{r cluster-bar, fig.width=7, fig.height=5}
+pct_mat <- t(prop.table(tab, margin = 1)) * 100   # subtypes × clusters
+
+barplot(pct_mat,
+        col    = subtype_cols[rownames(pct_mat)],  # index by subtype name
+        border = NA,
+        legend.text = rownames(pct_mat),
+        args.legend = list(x = "topright", cex = 0.85),
+        ylab = "Tumours (%)", xlab = "Cluster",
+        main = "PAM50 subtype composition of each k-means cluster")
+```
+
+## Gene expression by cluster
+
+```{r cluster-genes, fig.width=10, fig.height=7}
+highlight_genes <- c("ESR1", "ERBB2", "KRT5", "MKI67", "PGR", "FOXA1")
+pretty <- c("ESR1 (ER gene)", "ERBB2 (HER2 gene)", "KRT5 (basal)",
+            "MKI67 (Ki-67)", "PGR (PR gene)", "FOXA1 (luminal TF)")
+
+par(mfrow = c(2, 3))
+for (i in seq_along(highlight_genes)) {
+  boxplot(brca[[ highlight_genes[i] ]] ~ scores$cluster,
+          col    = cl_cols, border = "grey30",
+          main   = pretty[i],
+          xlab   = "Cluster", ylab = "log₂ expression")
+}
+par(mfrow = c(1, 1))
+```
+
+> **Question 6.2.** Is any cluster dominated by a single PAM50 subtype?
+> Which subtype is most cleanly captured by a single cluster, and which
+> subtypes are most likely to be mixed together? Looking at the boxplots:
+> which cluster has the highest *ESR1* and *PGR* expression (consistent
+> with Luminal A), and which has the highest *KRT5* expression (consistent
+> with Basal-like)?
+
+> **Question 6.3.** The clustering algorithm had no access to the PAM50
+> subtype labels — it worked only from 50 gene expression values.
+> Yet it partially recovers the clinical subtypes. What does this
+> demonstrate about the information content of these 50 genes? Does it
+> validate the PAM50 test as a robust molecular classification tool?
+
+> **Question 6.4.** Luminal A and Luminal B tumours are both ER-positive,
+> yet they have different prognoses and treatment recommendations. If the
+> unsupervised clustering tends to group them together, what does this
+> suggest about how similar they are at the gene-expression level? What
+> additional information — clinical or genomic — might be needed to
+> reliably separate them?
+
+---
+
+# Part G — Wrap-up
+
+```{r session}
+sessionInfo()
+```
+
+> **Question 7.1 (wrap-up).** In four or five sentences, summarise the
+> key findings: How well do the first two principal components separate
+> the five PAM50 subtypes? What biological programmes do PC1 and PC2
+> represent, and which specific genes drive those axes? Does the spatial
+> arrangement in PCA space reflect the known clinical hierarchy — with
+> Luminal A (best prognosis) and Basal-like (worst prognosis) at opposite
+> poles? And what does the unsupervised clustering analysis tell us about
+> whether breast cancer gene expression naturally organises into the same
+> groups that pathologists and oncologists use clinically?
