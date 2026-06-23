@@ -3,10 +3,6 @@ title: "TP1 — Exploring Biomedical Data"
 subtitle: "Doctors as Data Scientists · Introduction to Exploratory Data Analysis in R"
 author: "Santiago with Claude"
 date: "`r Sys.Date()`"
-knit: (function(input_file, encoding) {
-  out_dir <- 'docs';
-  rmarkdown::render(input_file, encoding=encoding,
-  output_file=file.path(dirname(input_file), '..', out_dir, 'TP1_Exploring_Biomedical_Data.html'))})
 output:
   html_document:
     toc: true
@@ -28,12 +24,128 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
 > top-right of each grey *code chunk* to run it. Look at the output, and answer
 > the **Questions** in the green boxes (write your answers in plain text under
 > each one). The goal is to *understand the data*, not to memorise code.
+>
+> This practical has **two case studies**. We warm up on intuitive body
+> measurements (Case Study 1), then apply the same ideas — and go deeper — on a
+> real clinical dataset (Case Study 2).
+
+## Set-up (run once)
+
+```{r install, eval=FALSE}
+# Run this ONCE. If a package is already installed nothing bad happens.
+install.packages(c("corrplot",        # correlation pictures
+                   "scatterplot3d"))  # 3-D scatter plot
+```
+
+```{r libraries}
+library(corrplot)
+library(scatterplot3d)
+```
 
 ---
 
-# The dataset: hepatitis C blood panel
+# Case Study 1 — Body dimensions of healthy adults
 
-Each row is one person who had a blood sample analysed. The data come from the
+We start with an easy, intuitive dataset: **body measurements of 507 physically
+active adults** (247 men and 260 women), from the
+[openintro](https://www.openintro.org/data/index.php?data=bdims) package. Every
+column is something you can picture with a tape measure.
+
+The 21 body measurements come in two families (all in **cm**):
+
+| Family | Examples (column codes) | Meaning |
+|--------|-------------------------|---------|
+| **Skeletal diameters** | `bia_di`, `bii_di`, `bit_di`, `che_di`, `elb_di`, `wri_di`, `kne_di`, `ank_di` | bone-to-bone breadths (shoulder, pelvis, chest, elbow, wrist, knee, ankle) |
+| **Girths (circumferences)** | `sho_gi`, `che_gi`, `wai_gi`, `hip_gi`, `thi_gi`, `bic_gi`, `for_gi`, `cal_gi` | shoulder, chest, waist, hip, thigh, biceps, forearm, calf |
+
+Plus `age` (years), `wgt` (weight, kg), `hgt` (height, cm) and `sex`
+(1 = male, 0 = female).
+
+## Load the data
+
+```{r load-bdims}
+bd <- read.csv("../data/bdims.csv")
+bd$sex <- factor(bd$sex, levels = c(0, 1), labels = c("female", "male"))
+head(bd)
+```
+
+## Getting to know the data
+
+```{r bdims-structure}
+dim(bd)          # rows (people) and columns (measurements)
+table(bd$sex)    # how many women and men
+```
+
+> **Question 1.1.** How many people are in the dataset, and how many measurements
+> were taken on each one? Which single variable is *categorical* (a label) rather
+> than a number? What are the units of `hgt`, `wgt` and the girths?
+
+## What shape is a measurement?
+
+```{r bdims-hist, fig.width=9}
+par(mfrow = c(1, 2))
+hist(bd$hgt, breaks = 30, col = "steelblue",  main = "Height", xlab = "height (cm)")
+hist(bd$wgt, breaks = 30, col = "darkorange", main = "Weight", xlab = "weight (kg)")
+par(mfrow = c(1, 1))
+```
+
+> **Question 1.2.** Are height and weight roughly *symmetric* (bell-shaped), or
+> strongly lop-sided? (Keep this in mind: in Case Study 2 the clinical lab values
+> will look very different.)
+
+> **Question 1.3.** Make a boxplot of weight (`boxplot(bd$wgt)`). Are there a few
+> unusually heavy or light people? In a sample of healthy adults, would you expect
+> many extreme outliers?
+
+## Comparing the two groups (men vs women)
+
+```{r bdims-sex, fig.width=9}
+par(mfrow = c(1, 2))
+boxplot(sho_gi ~ sex, data = bd, col = c("plum","steelblue"),
+        main = "Shoulder girth", xlab = "", ylab = "cm")
+boxplot(hip_gi ~ sex, data = bd, col = c("plum","steelblue"),
+        main = "Hip girth", xlab = "", ylab = "cm")
+par(mfrow = c(1, 1))
+```
+
+> **Question 1.4.** Which measurement separates men and women more clearly —
+> shoulder girth or hip girth? Try a few others (e.g. `wri_di`, `thi_gi`). Which
+> body measurements are most "male/female different", and which barely differ?
+
+## Relationships between measurements
+
+```{r bdims-cor}
+meas <- c("hgt","wgt","sho_gi","che_gi","wai_gi","hip_gi","thi_gi","bic_gi")
+round(cor(bd[, meas]), 2)
+```
+
+```{r bdims-scatter}
+plot(bd$wgt, bd$che_gi, pch = 19, col = rgb(0,0,1,0.3),
+     main = "Chest girth vs weight", xlab = "weight (kg)", ylab = "chest girth (cm)")
+```
+
+> **Question 1.5.** Which pair of measurements is most strongly correlated? Are any
+> pairs *negatively* correlated — and does it make sense that, in body
+> measurements, almost everything grows together?
+
+## Putting measurements on a common scale
+
+```{r bdims-scale}
+bd_z <- scale(bd[, meas])               # mean 0, sd 1 for each measurement
+round(colMeans(bd_z), 2)                # all ~0
+round(apply(bd_z, 2, sd), 2)            # all 1
+```
+
+> **Question 1.6.** Weight is in kilograms, the girths in centimetres. Why does
+> standardising (mean 0, sd 1) let us compare and combine them fairly? (We rely on
+> this in TP2 and TP3.)
+
+---
+
+# Case Study 2 — Hepatitis C blood panel
+
+Now a real clinical dataset. Each row is one person who had a blood sample
+analysed. The data come from the
 [UCI HCV dataset](https://archive.ics.uci.edu/dataset/571/hcv+data): healthy
 **blood donors** and patients with hepatitis C at increasing stages of liver
 damage (**Hepatitis → Fibrosis → Cirrhosis**).
@@ -62,27 +174,10 @@ The numeric columns are routine **laboratory tests**:
 > cholinesterase in kU/L, and cholesterol in mmol/L. We show "U/L" on some plot
 > axes on that assumption; treat it as inferred, not documented.
 
-## Install the packages (run once)
-
-```{r install, eval=FALSE}
-# Run this ONCE. If a package is already installed nothing bad happens.
-install.packages(c("corrplot",        # correlation pictures
-                   "scatterplot3d"))  # 3-D scatter plot
-```
-
-```{r libraries}
-library(corrplot)
-library(scatterplot3d)
-```
-
 ## Load the data
 
 ```{r load}
-# The data file lives one folder up, inside the "data" folder.
-#hcv <- read.csv("../data/hcvdat0.csv", row.names = 1)
 hcv <- read.csv("../data/hcvdat0.csv", row.names = 1)
-
-# Show the first few rows
 head(hcv)
 ```
 
@@ -97,11 +192,7 @@ hcv$Group <- factor(gsub("^0.*", "Donor", hcv$Category),
 labs <- c("ALB","ALP","ALT","AST","BIL","CHE","CHOL","CREA","GGT","PROT")
 ```
 
----
-
-# Part A — Getting to know the data
-
-## How big is it, and what is in it?
+## Part A — Getting to know the data
 
 ```{r structure}
 # How many rows (patients) and columns (variables)?
@@ -119,15 +210,15 @@ table(hcv$Category)   # patients per diagnosis
 table(hcv$Sex)        # patients per sex
 ```
 
-> **Question 1.1.** How many patients are in the dataset, and how many variables
+> **Question 2.1.** How many patients are in the dataset, and how many variables
 > were measured on each one? Which variables are numeric measurements and which
 > are categorical labels?
 
-> **Question 1.2.** How many patients are healthy blood donors, and how many have
+> **Question 2.2.** How many patients are healthy blood donors, and how many have
 > some form of liver disease (Hepatitis, Fibrosis, Cirrhosis)? Is the dataset
 > *balanced* between healthy and sick people?
 
-## Looking at the raw file before trusting it
+### Looking at the raw file before trusting it
 
 Before any analysis, a good data scientist *opens the raw file* to see how it is
 written. The chunk below prints the first three lines exactly as stored on disk.
@@ -136,14 +227,14 @@ written. The chunk below prints the first three lines exactly as stored on disk.
 readLines("../data/hcvdat0.csv", n = 3)
 ```
 
-> **Question 1.3.** From those raw lines, work out: (a) what character **separates
+> **Question 2.3.** From those raw lines, work out: (a) what character **separates
 > the columns** (a comma? a semicolon? a tab?); (b) what character is the
 > **decimal point** (a dot or a comma?); and (c) how a **missing value** would
 > appear (here, the letters `NA`). Why does R need to know the separator and the
 > decimal mark to read the file correctly? (This is why we used `read.csv`, which
 > assumes a comma separator and a dot decimal.)
 
-## Missing values
+### Missing values
 
 Real medical data almost always has gaps. In R a missing value is shown as `NA`.
 
@@ -152,14 +243,12 @@ colSums(is.na(hcv))           # how many NA in each column
 sum(!complete.cases(hcv))     # how many patients have at least one NA
 ```
 
-> **Question 1.4.** Which lab tests have missing values, and how many? If you
+> **Question 2.4.** Which lab tests have missing values, and how many? If you
 > wanted to analyse all 10 lab tests together, what could you do about the
 > patients with missing results? (Two common options: drop those patients, or
 > fill the gaps with an estimate.)
 
----
-
-# Part B — Describing one variable at a time
+## Part B — Describing one variable at a time
 
 ```{r summary}
 # A quick five-number summary of every variable
@@ -175,11 +264,11 @@ sd(hcv$AST, na.rm = TRUE)      # standard deviation = spread
 When the **mean is much larger than the median**, a few very high values are
 pulling the average up — the distribution is *right-skewed*.
 
-> **Question 2.1.** Using the `summary()` output, list the lab tests for which the
+> **Question 2.5.** Using the `summary()` output, list the lab tests for which the
 > mean is clearly larger than the median. What does that tell you about the shape
-> of those distributions?
+> of those distributions? (Contrast with the body measurements in Case Study 1.)
 
-## Histograms and boxplots
+### Histograms and boxplots
 
 ```{r hist-ast}
 hist(hcv$AST, breaks = 40, col = "steelblue",
@@ -191,25 +280,23 @@ boxplot(hcv$AST, horizontal = TRUE, col = "steelblue",
         main = "Boxplot of AST", xlab = "AST (U/L)")
 ```
 
-> **Question 2.2.** Describe the shape of the AST distribution. Is it symmetric
+> **Question 2.6.** Describe the shape of the AST distribution. Is it symmetric
 > (bell-shaped), or does it have a long tail on one side? Now make a histogram for
 > `CHE` (change `hcv$AST` to `hcv$CHE`). How is its shape different?
 
-## Spotting unusual values (outliers)
+### Spotting unusual values (outliers)
 
 ```{r outliers}
 max(hcv$CREA, na.rm = TRUE)                                  # most extreme creatinine
 hcv[which.max(hcv$CREA), c("Group","Age","Sex","CREA")]     # who is it?
 ```
 
-> **Question 2.3.** Several lab values are far higher than the rest. Are these
+> **Question 2.7.** Several lab values are far higher than the rest. Are these
 > likely to be *mistakes* (typos, machine errors) or *real* extreme results from
 > very sick patients? How would you decide? (Hint: look at the patient's
 > diagnosis above.)
 
----
-
-# Part C — Distribution shape, normality, and transformations
+## Part C — Distribution shape, normality, and transformations
 
 Many statistical methods assume data are roughly **normal** (bell-shaped). A
 quick visual check is the **Q-Q plot**: if the points fall along the straight
@@ -219,7 +306,7 @@ line the data are close to normal; if they curve away at the ends, they are not.
 qqnorm(hcv$AST, main = "Q-Q plot of AST"); qqline(hcv$AST, col = "red")
 ```
 
-## Comparing transformations
+### Comparing transformations
 
 For right-skewed lab data we can try the **logarithm**, the **square root**, or
 the **reciprocal** (1/x). Let's see which makes AST most symmetric.
@@ -233,33 +320,31 @@ hist(1/hcv$AST,      breaks = 40, col = "plum",      main = "1 / AST",        xl
 par(mfrow = c(1, 1))
 ```
 
-> **Question 3.1.** Which transformation makes AST look most bell-shaped: square
+> **Question 2.8.** Which transformation makes AST look most bell-shaped: square
 > root, logarithm, or reciprocal? Check your choice by also drawing its Q-Q plot
 > (for example `qqnorm(log(hcv$AST)); qqline(log(hcv$AST))`) — the best
 > transformation is the one whose points sit closest to the straight line.
 
-> **Question 3.2.** Repeat the comparison for `GGT` and `BIL`. Why might it be
+> **Question 2.9.** Repeat the comparison for `GGT` and `BIL`. Why might it be
 > convenient to analyse these strongly skewed tests on a transformed scale?
 > (Note: this is an *empirical* choice — the transformation that makes the data
 > most symmetric — not a rule fixed by the measurement units.)
 
----
-
-# Part D — Comparing disease groups
+## Part D — Comparing disease groups
 
 ```{r box-by-group, fig.width=9}
 boxplot(AST ~ Group, data = hcv, col = "lightblue",
         main = "AST by diagnosis", xlab = "", ylab = "AST (U/L)")
 ```
 
-> **Question 4.1.** Does AST (a marker of liver-cell damage) tend to increase as
+> **Question 2.10.** Does AST (a marker of liver-cell damage) tend to increase as
 > the disease becomes more severe (donor → hepatitis → fibrosis → cirrhosis)?
 
-> **Question 4.2.** Albumin (`ALB`) and cholinesterase (`CHE`) reflect how well
+> **Question 2.11.** Albumin (`ALB`) and cholinesterase (`CHE`) reflect how well
 > the liver is *working*. Make boxplots of `ALB` and `CHE` by `Group`. Do they go
 > **up** or **down** in cirrhosis? Does that make biological sense?
 
-## All variables at once: a profile of the means
+### All variables at once: a profile of the means
 
 To compare all ten tests across the four groups in one picture, we first need to
 put them on a common scale. The tests use very different units and ranges (CREA
@@ -285,11 +370,11 @@ legend("topright", legend = profiles$Group, col = 1:4, pch = 19)
 abline(h = 0, lty = 3)                                 # the overall average
 ```
 
-> **Question 4.3.** Reading the profile plot, which lab tests pull the **cirrhosis**
+> **Question 2.12.** Reading the profile plot, which lab tests pull the **cirrhosis**
 > line far away from the **donor** line (the most *discriminating* tests)? Which
 > tests are roughly the same in every group (not useful for telling them apart)?
 
-## Every variable on its own scale
+### Every variable on its own scale
 
 The profile above used standardised averages. It is also worth seeing the raw
 distributions, one boxplot per test.
@@ -303,15 +388,13 @@ for (v in labs) {
 par(mfrow = c(1, 1))
 ```
 
-> **Question 4.4.** Scanning all 10 boxplots, which tests separate the disease
+> **Question 2.13.** Scanning all 10 boxplots, which tests separate the disease
 > groups most clearly, and which hardly differ between groups? Does this agree
-> with what you saw in the profile-of-means plot (Question 4.3)?
+> with what you saw in the profile-of-means plot (Question 2.12)?
 
----
+## Part E — Relationships between variables
 
-# Part E — Relationships between variables
-
-## Mean vector, covariance and correlation
+### Mean vector, covariance and correlation
 
 The **mean vector** is just the average of every variable. The **covariance
 matrix** measures how pairs of variables vary together; the **correlation
@@ -323,13 +406,13 @@ round(cov(hcv[, labs], use = "complete.obs"), 1)    # covariance matrix
 round(cor(hcv[, labs], use = "complete.obs"), 2)    # correlation matrix
 ```
 
-> **Question 5.1.** Look at the diagonal of the **covariance** matrix (each
+> **Question 2.14.** Look at the diagonal of the **covariance** matrix (each
 > variable's variance). Creatinine's number is enormous compared with
 > cholesterol's. Is creatinine "more variable" in a meaningful sense, or is this
 > just because of its units and scale? Why is the **correlation** matrix easier
 > to compare across tests?
 
-## Which tests move together?
+### Which tests move together?
 
 ```{r cor-matrix, fig.width=7, fig.height=7}
 cor_matrix <- cor(hcv[, labs], use = "complete.obs")
@@ -343,26 +426,23 @@ plot(hcv$ALT, hcv$AST, pch = 19, col = rgb(0,0,1,0.3),
      main = "AST vs ALT", xlab = "ALT (U/L)", ylab = "AST (U/L)")
 ```
 
-> **Question 5.2.** Which **pair** of lab tests is most strongly correlated? Does
+> **Question 2.15.** Which **pair** of lab tests is most strongly correlated? Does
 > that match your clinical intuition? Now find a pair that is **negatively**
 > correlated and try to explain why.
 
-## A scatterplot of every pair at once
+### A scatterplot of every pair at once
 
 ```{r pairs, fig.width=9, fig.height=9}
-# Colour each point by diagnosis. (A few tests are logged to spread the points.)
 pairs(hcv[, c("ALB","AST","BIL","CHE","GGT","PROT")],
       col = c("#2166AC","#92C5DE","#F4A582","#B2182B")[hcv$Group],
       pch = 19, cex = 0.4, gap = 0.2,
       main = "Scatterplot matrix (coloured by diagnosis)")
 ```
 
-> **Question 5.3.** In the scatterplot matrix, can you spot any pair of tests where
+> **Question 2.16.** In the scatterplot matrix, can you spot any pair of tests where
 > the cirrhosis patients (dark red) clearly peel away from the donors (blue)?
 
----
-
-# Part F — Pictures of whole patients
+## Part F — Pictures of whole patients
 
 This classic plot draws **each patient as a small star**, so similar patients
 look alike. We use a small, readable sample of a few patients per group.
@@ -376,7 +456,7 @@ sub_labs <- scale(sub[, labs])                       # standardised for fair sha
 rownames(sub_labs) <- paste(substr(sub$Group, 1, 4), seq_along(idx))
 ```
 
-## Star (segment) plots
+### Star (segment) plots
 
 Each patient becomes a star: every ray is one lab test, longer = higher value.
 
@@ -385,11 +465,11 @@ stars(sub_labs, draw.segments = TRUE, key.loc = c(ncol(sub_labs) + 4, 2),
       main = "Star plot: one star per patient", cex = 0.7)
 ```
 
-> **Question 6.1.** In the star plot, do patients from the same diagnosis group
+> **Question 2.17.** In the star plot, do patients from the same diagnosis group
 > look similar to each other? Point to two patients whose stars look almost the
 > same, and two that look very different.
 
-## A three-dimensional cloud
+### A three-dimensional cloud
 
 We can plot three tests at once and colour by diagnosis.
 
@@ -401,18 +481,16 @@ scatterplot3d(hcv$AST[keep], hcv$GGT[keep], hcv$BIL[keep],
               main = "Three liver markers in 3-D")
 ```
 
-> **Question 6.2.** In the 3-D cloud of AST, GGT and BIL, do the cirrhosis
+> **Question 2.18.** In the 3-D cloud of AST, GGT and BIL, do the cirrhosis
 > patients occupy a different region from the donors? Is it getting hard to "see"
 > the separation with only three variables — and we have ten? (This is exactly the
 > problem that PCA, in TP2, will solve.)
 
----
+## Part G — Standardisation and wrap-up
 
-# Part G — Standardisation and wrap-up
-
-We introduced standardisation in Part D (Question 4.3) and used it again for the
+We introduced standardisation in Part D (Question 2.12) and used it again for the
 star plots. Here is the key check, and the reason it matters for everything that
-follows — including PCA and clustering in TP2 and TP4.
+follows — including PCA and clustering in TP2 and TP3.
 
 ```{r scale-check}
 hcv_z <- scale(hcv[, labs])
@@ -420,14 +498,14 @@ round(colMeans(hcv_z, na.rm = TRUE), 2)        # all ~0
 round(apply(hcv_z, 2, sd, na.rm = TRUE), 2)    # all 1
 ```
 
-> **Question 7.1.** Before standardising, creatinine (values up to ~1000) would
+> **Question 2.19.** Before standardising, creatinine (values up to ~1000) would
 > dominate any distance, average, or multivariate plot simply because its numbers
 > are biggest. Why does putting all variables on the same scale make a *fairer*
 > comparison between patients? Re-draw the correlation `corrplot` on `hcv_z` — does
 > standardising change the correlations? (It should not — explain why.)
 
-> **Question 7.2 (wrap-up).** In three or four sentences, summarise what you have
-> learned: How big is the dataset? Which variables are skewed, and what fixes
+> **Question 2.20 (wrap-up).** In three or four sentences, summarise what you have
+> learned: How big is each dataset? Which variables are skewed, and what fixes
 > that? Which tests rise or fall with liver disease? Which tests move together?
 > And which single tests best separate cirrhosis from healthy donors?
 
