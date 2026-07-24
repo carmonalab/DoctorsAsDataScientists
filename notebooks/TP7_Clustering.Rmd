@@ -1,0 +1,548 @@
+---
+title: "TP7 — Unsupervised Clustering"
+subtitle: "K-means, hierarchical clustering, and cluster validation - Breast cancer subtypes"
+author: "Massimo Andreatta"
+date: "`r Sys.Date()`"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file, encoding=encoding,
+  output_file=file.path(dirname(input_file), '..', out_dir, 'TP7_Clustering.html'))})
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 2
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 7, fig.height = 4.5, fig.align = "center")
+```
+
+> **How to use this notebook.** You do **not** need any programming experience.
+> Read each short explanation, then press the green *play* button (▶) at the
+> top-right of each grey *code chunk* to run it. Look at the output, and answer
+> the **Questions** in the green boxes (write your answers in plain text under
+> each one). The goal is to *understand the data and the method*, not to
+> memorise code.
+
+> **Building on TP4–TP6.** This notebook assumes you have completed TP4–TP6,
+> which introduced PCA using three different datasets and culminated in a
+> full PCA analysis of a breast cancer gene-expression cohort (TP6). TP6 ended
+> with a first taste of **unsupervised clustering** using k-means; here we
+> slow down, cover clustering properly, add **hierarchical clustering**, and
+> learn how to **validate** a clustering result rather than just eyeballing a
+> plot.
+
+---
+
+# From PCA to clustering
+
+## Two different questions
+
+PCA and clustering are both **unsupervised** — neither uses the diagnosis or
+subtype labels. But they answer different questions:
+
+- **PCA** asks: *what are the axes along which patients/tumours vary the
+  most?* Its output is a set of continuous new coordinates (PC1, PC2, …).
+- **Clustering** asks: *which points are similar enough to be grouped
+  together?* Its output is a discrete label — cluster 1, cluster 2, … — for
+  every point.
+
+The two are often used together, exactly as we will do here: run PCA first
+to compress many genes into a handful of informative axes, then cluster the
+patients using those axes rather than the original noisy, high-dimensional
+data.
+
+## Key vocabulary
+
+| Term | Plain-language meaning |
+|---|---|
+| **Cluster** | A group of points considered similar to one another |
+| **Distance / dissimilarity** | A number quantifying how different two points are — the input to every clustering method |
+| **Centroid** | The "average" point of a cluster (used by k-means) |
+| **Dendrogram** | A tree diagram showing how points are progressively merged in hierarchical clustering |
+| **Linkage** | The rule used to decide how far apart two *clusters* are, based on the points inside them |
+| **Within-cluster sum of squares (WSS)** | How spread out the points are within their assigned cluster — lower is tighter |
+| **Silhouette width** | A score (from −1 to +1) for how well a point fits its own cluster compared with the next-closest cluster |
+
+## A toy example: how k-means finds groups
+
+Before working with a real dataset, let's build intuition with two simple made-up
+measurements and three obviously separated groups of points.
+
+```{r toy-kmeans, fig.width=7, fig.height=5.5, echo=FALSE}
+set.seed(11)
+n_per <- 40
+blob1 <- cbind(rnorm(n_per, mean = 0,   sd = 0.7), rnorm(n_per, mean = 0,   sd = 0.7))
+blob2 <- cbind(rnorm(n_per, mean = 5,   sd = 0.7), rnorm(n_per, mean = 0,   sd = 0.7))
+blob3 <- cbind(rnorm(n_per, mean = 2.5, sd = 0.7), rnorm(n_per, mean = 4.3, sd = 0.7))
+toy <- rbind(blob1, blob2, blob3)
+
+km_toy   <- kmeans(toy, centers = 3, nstart = 25)
+toy_cols <- c("#e41a1c", "#377eb8", "#4daf4a")
+
+plot(toy, pch = 19, cex = 1.2,
+     col  = toy_cols[km_toy$cluster],
+     xlab = "Measurement 1", ylab = "Measurement 2",
+     main = "K-means finds groups of nearby points")
+points(km_toy$centers, pch = 4, cex = 2.5, lwd = 3, col = "black")
+legend("topright", legend = c("Cluster 1", "Cluster 2", "Cluster 3", "Centroid"),
+       col = c(toy_cols, "black"), pch = c(19, 19, 19, 4), pt.cex = c(1, 1, 1, 1.5))
+```
+
+K-means starts from random guesses for the cluster centres, assigns every
+point to its nearest centre, recomputes the centres as the average of their
+assigned points, and repeats until nothing changes. The black crosses are the
+final **centroids** — the "centre of gravity" of each cluster.
+
+> **Question 0.1.** In the toy plot above, the three groups are very
+> obviously separated. Do you think k-means would still find sensible
+> clusters if the three blobs overlapped substantially? What would happen to
+> points that fall in the region where two blobs overlap?
+
+> **Question 0.2.** K-means requires you to specify the number of clusters,
+> *k*, in advance. In the toy example we told it `centers = 3`. What do you
+> think would happen if we asked k-means for `centers = 2` on this same
+> data? What about `centers = 6`?
+
+---
+
+# The dataset: breast cancer gene expression (recap)
+
+We continue with the same **TCGA-BRCA** gene-expression dataset used in TP6:
+522 tumours, 50 PAM50 genes, and a known PAM50 subtype label (LumA, LumB,
+Her2, Basal, NormalLike) for each tumour. As in TP6, we standardise the genes
+and run PCA — the code below reproduces that pipeline without repeating the
+explanations (see TP6 for the full walk-through).
+
+```{r load}
+brca <- read.csv("../data/brca_pam50.csv", row.names = 1)
+gene_cols <- colnames(brca)[7:56]
+
+subtype_cols <- c(
+  LumA       = "#1f77b4",
+  LumB       = "#aec7e8",
+  Her2       = "#ff7f0e",
+  Basal      = "#d62728",
+  NormalLike = "#7f7f7f"
+)
+
+X   <- scale(brca[, gene_cols])
+pca <- prcomp(X, scale. = FALSE)
+var_exp <- pca$sdev^2 / sum(pca$sdev^2) * 100
+
+scores <- as.data.frame(pca$x)
+scores$subtype <- factor(brca$pam50,
+                         levels = c("LumA", "LumB", "Her2", "Basal", "NormalLike"))
+col_pts <- subtype_cols[as.character(scores$subtype)]
+```
+
+```{r score-plot-recap, fig.width=7, fig.height=5.5}
+plot(scores$PC1, scores$PC2,
+     col  = col_pts, pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "PCA plot — coloured by PAM50 subtype (recap from TP6)")
+legend("topright", legend = names(subtype_cols), col = subtype_cols,
+       pch = 19, cex = 0.85, pt.cex = 1.1)
+```
+
+From here on, we will **not use the `subtype` colours to build the
+clusters** — clustering only sees the PCA coordinates. We use the known
+labels afterwards, purely to check whether the clusters we find agree with
+the known biology.
+
+We cluster tumours using the first five PCs (which together capture most of
+the informative variance — see the scree plot in TP6) rather than the raw
+50 genes: this reduces noise and speeds up computation.
+
+```{r npc}
+npc <- 5   # number of PCs used as clustering input
+```
+
+---
+
+# 1 — K-means clustering
+
+Can we **rediscover** the PAM50 subtypes **without** using the labels — only
+from the 50 gene expression values (summarised by their first 5 PCs)?
+
+**K-means clustering** assigns each tumour to one of *k* groups so that
+tumours in the same group are as similar as possible to their group's
+centroid — the same idea as the toy example above, now applied to real data.
+
+## Choosing the number of clusters (elbow plot)
+
+```{r elbow, fig.width=6, fig.height=4}
+set.seed(42)
+
+wss <- sapply(1:10, function(k) {
+  kmeans(pca$x[, 1:npc], centers = k, nstart = 25)$tot.withinss
+})
+
+plot(1:10, wss, type = "b", pch = 19, col = "steelblue",
+     xlab = "Number of clusters (k)",
+     ylab = "Total within-cluster sum of squares",
+     main = "Elbow plot for k-means")
+```
+
+> **Question 1.1.** There are five known PAM50 subtypes (though Normal-like
+> has only 8 samples). Does the elbow plot suggest *k* = 5 as a clear
+> inflection point, or does the curve flatten earlier? What might this tell
+> us about whether all five subtypes form truly distinct clusters in gene
+> expression space?
+
+## Clustering with k = 4
+
+We choose *k* = 4 to match the four major clinical subtypes (LumA, LumB,
+Her2, Basal), setting aside the rare Normal-like category — and to allow a
+direct comparison with the hierarchical clustering below.
+
+```{r kmeans}
+set.seed(42)
+cl_cols <- c("#e41a1c", "#377eb8", "#4daf4a", "#984ea3")
+
+km <- kmeans(pca$x[, 1:npc], centers = 4, nstart = 25)
+scores$cluster_km <- as.factor(km$cluster)
+```
+
+```{r cluster-plot, fig.width=7, fig.height=5.5}
+plot(scores$PC1, scores$PC2,
+     col = cl_cols[scores$cluster_km], pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "K-means clusters (k = 4) in PCA space")
+legend("topright", legend = paste("Cluster", 1:4),
+       col = cl_cols, pch = 19, cex = 0.85)
+```
+
+## How well do the k-means clusters match PAM50 subtypes?
+
+```{r confusion}
+tab_km <- table(Cluster = scores$cluster_km, PAM50 = scores$subtype)
+tab_km
+round(prop.table(tab_km, margin = 1) * 100, 1)
+```
+
+```{r cluster-bar, fig.width=7, fig.height=5}
+pct_mat <- t(prop.table(tab_km, margin = 1)) * 100   # subtypes × clusters
+
+barplot(pct_mat,
+        col    = subtype_cols[rownames(pct_mat)],
+        border = NA,
+        legend.text = rownames(pct_mat),
+        args.legend = list(x = "topright", cex = 0.85),
+        ylab = "Tumours (%)", xlab = "Cluster",
+        main = "PAM50 subtype composition of each k-means cluster")
+```
+
+## Gene expression by cluster
+
+```{r cluster-genes, fig.width=10, fig.height=7}
+highlight_genes <- c("ESR1", "ERBB2", "KRT5", "MKI67", "PGR", "FOXA1")
+pretty <- c("ESR1 (ER gene)", "ERBB2 (HER2 gene)", "KRT5 (basal)",
+            "MKI67 (Ki-67)", "PGR (PR gene)", "FOXA1 (luminal TF)")
+
+par(mfrow = c(2, 3))
+for (i in seq_along(highlight_genes)) {
+  boxplot(brca[[ highlight_genes[i] ]] ~ scores$cluster_km,
+          col    = cl_cols, border = "grey30",
+          main   = pretty[i],
+          xlab   = "Cluster", ylab = "log₂ expression")
+}
+par(mfrow = c(1, 1))
+```
+
+> **Question 1.2.** Is any cluster dominated by a single PAM50 subtype?
+> Which subtype is most cleanly captured by a single cluster, and which
+> subtypes are most likely to be mixed together? Looking at the boxplots:
+> which cluster has the highest *ESR1* and *PGR* expression (consistent
+> with Luminal A), and which has the highest *KRT5* expression (consistent
+> with Basal-like)?
+
+> **Question 1.3.** The clustering algorithm had no access to the PAM50
+> subtype labels — it worked only from gene expression values. Yet it
+> partially recovers the clinical subtypes. What does this demonstrate about
+> the information content of these 50 genes?
+
+> **Question 1.4.** Luminal A and Luminal B tumours are both ER-positive,
+> yet they have different prognoses and treatment recommendations. If the
+> unsupervised clustering tends to group them together, what does this
+> suggest about how similar they are at the gene-expression level?
+
+---
+
+# 2 — Hierarchical clustering
+
+## How it works
+
+Hierarchical clustering does not require choosing *k* in advance. It starts
+with every point in its own cluster, then repeatedly **merges the two
+closest clusters** until only one giant cluster remains. The record of every
+merge is stored in a **dendrogram** — a tree you can "cut" at any height to
+obtain any number of clusters.
+
+Two ingredients decide the result:
+
+- **Distance metric** — how do we measure how far apart two individual
+  tumours are? We use **Euclidean distance** on the first five PCs.
+- **Linkage** — how do we measure the distance between two *clusters* (each
+  containing several tumours), not just two points? We use **Ward's
+  method**, which merges clusters in the way that increases within-cluster
+  variance the least — it tends to produce compact, similarly sized
+  clusters.
+
+```{r hclust}
+d  <- dist(pca$x[, 1:npc])
+hc <- hclust(d, method = "ward.D2")
+```
+
+## The dendrogram
+
+```{r dendrogram, fig.width=9, fig.height=5}
+plot(hc, labels = FALSE, hang = -1,
+     main = "Hierarchical clustering dendrogram (522 tumours)",
+     xlab = "Tumours", sub = "")
+rect.hclust(hc, k = 4, border = cl_cols)
+```
+
+Each leaf at the bottom is one tumour (too many to label individually); the
+height of each merge shows how dissimilar the two merging groups were. The
+coloured boxes show where the tree is cut to produce **4 clusters** — the
+same number we used for k-means above, so the two methods can be compared
+fairly.
+
+> **Question 2.1.** Looking at the dendrogram, do the four coloured boxes
+> split off at similar heights, or does one box separate from the rest much
+> earlier (at a much greater height) than the others? What would that tell
+> you about how distinct that group is from the rest?
+
+> **Question 2.2.** If you cut the dendrogram at a much lower height (close
+> to 0), would you get more or fewer clusters than 4? What about cutting it
+> at the very top, just below the root?
+
+## Hierarchical clusters in PCA space
+
+```{r hclust-cut}
+scores$cluster_hc <- as.factor(cutree(hc, k = 4))
+```
+
+```{r hclust-plot, fig.width=7, fig.height=5.5}
+plot(scores$PC1, scores$PC2,
+     col  = cl_cols[scores$cluster_hc], pch = 19, cex = 0.7,
+     xlab = paste0("PC1 (", round(var_exp[1], 1), " %)"),
+     ylab = paste0("PC2 (", round(var_exp[2], 1), " %)"),
+     main = "Hierarchical clusters (k = 4) in PCA space")
+legend("topright", legend = paste("Cluster", 1:4), col = cl_cols,
+       pch = 19, cex = 0.85)
+```
+
+## Do hierarchical clusters match the known PAM50 subtypes?
+
+```{r hclust-confusion}
+tab_hc <- table(Cluster = scores$cluster_hc, PAM50 = scores$subtype)
+tab_hc
+round(prop.table(tab_hc, margin = 1) * 100, 1)
+```
+
+> **Question 2.3.** Compare the hierarchical-clustering PCA plot with the
+> PAM50-coloured PCA plot from the recap section. Does one hierarchical
+> cluster correspond closely to a single PAM50 subtype? Which subtype is
+> "easiest" for hierarchical clustering to isolate?
+
+> **Question 2.4.** Ward's linkage tends to produce clusters of similar
+> size. Looking at the cluster sizes in the confusion table, does this
+> assumption seem appropriate for this dataset — are the true PAM50 subtypes
+> (see the bar chart in TP6, section 1) roughly equal in size, or very
+> unequal? Could a "prefers equal-sized clusters" method be a poor fit here?
+
+---
+
+# 3 — Comparing the two clustering methods
+
+K-means and hierarchical clustering start from very different logic (an
+iteratively updated set of centroids vs. a merging tree), but we ran both
+with the same *k* = 4 on the same 5-dimensional PCA input. How similar are their
+results?
+
+```{r compare-methods}
+tab_compare <- table(`K-means` = scores$cluster_km, `Hierarchical` = scores$cluster_hc)
+tab_compare
+```
+
+```{r compare-plot, fig.width=12, fig.height=5.5}
+par(mfrow = c(1, 2))
+
+plot(scores$PC1, scores$PC2,
+     col = cl_cols[scores$cluster_km], pch = 19, cex = 0.6,
+     xlab = "PC1", ylab = "PC2", main = "K-means (k = 4)")
+
+plot(scores$PC1, scores$PC2,
+     col = cl_cols[scores$cluster_hc], pch = 19, cex = 0.6,
+     xlab = "PC1", ylab = "PC2", main = "Hierarchical clustering (k = 4)")
+
+par(mfrow = c(1, 1))
+```
+
+> **Question 3.1.** Look at the cross-tabulation above. Is there roughly a
+> **one-to-one correspondence** between k-means clusters and hierarchical
+> clusters (each k-means cluster maps almost entirely onto one hierarchical
+> cluster), or is the agreement weaker than that? Note that cluster
+> *numbers* are arbitrary and may not match between methods — focus on
+> whether entire *groups* of tumours agree, not on matching numeric labels.
+
+> **Question 3.2.** Where the two methods *disagree*, which tumours do you
+> think are involved — ones near the centre of a cluster, or ones near the
+> boundary between two clusters? Why would boundary tumours be the ones most
+> likely to be assigned differently by two different algorithms?
+
+---
+
+# 4 — How many clusters? Silhouette validation
+
+The elbow plot in section 1 is useful but subjective — there is no single
+"correct" answer for where the elbow is. The **silhouette width** gives a
+more objective, per-point score.
+
+## What silhouette width measures
+
+For each point, the silhouette width compares:
+
+- **a** = the average distance to other points in its *own* cluster (lower
+  is better — the point fits well where it is)
+- **b** = the average distance to points in the *nearest other* cluster
+  (higher is better — the point is far from its nearest alternative)
+
+The silhouette width is `(b - a) / max(a, b)`, ranging from **−1** (probably
+in the wrong cluster) to **+1** (very well matched to its cluster). Averaging
+this score across all points gives a single number to compare different
+values of *k*.
+
+```{r sil-choose-k, fig.width=6, fig.height=4}
+library(cluster)
+
+sil_width <- sapply(2:10, function(k) {
+  cl <- kmeans(pca$x[, 1:npc], centers = k, nstart = 25)$cluster
+  mean(silhouette(cl, d)[, "sil_width"])
+})
+
+plot(2:10, sil_width, type = "b", pch = 19, col = "darkorange",
+     xlab = "Number of clusters (k)",
+     ylab = "Average silhouette width",
+     main = "Silhouette validation for k-means")
+```
+
+> **Question 4.1.** Which value of *k* has the highest average silhouette
+> width? Is it the same value suggested by the elbow plot, or by the known
+> number of PAM50 subtypes (5, or 4 if Normal-like is excluded)? If they
+> disagree, which one would you trust more, and why?
+
+## Silhouette plot for k = 4
+
+We can also look at silhouette width **per tumour**, grouped by cluster, to
+see whether some clusters are much better defined than others.
+
+```{r sil-plot, fig.width=7, fig.height=6}
+sil_km <- silhouette(km$cluster, d)
+
+par(mar = c(4, 4, 4, 8))
+plot(sil_km, col = cl_cols, border = NA,
+     main = "Silhouette plot — k-means, k = 4", cex.names = 0.7)
+```
+
+Each horizontal bar is one tumour; bars are grouped and sorted by cluster.
+Tumours with a **negative** silhouette width are, on average, closer to a
+*different* cluster than the one they were assigned to — a sign of a
+poorly-defined boundary or a genuinely intermediate tumour.
+
+> **Question 4.2.** Which cluster has the highest average silhouette width
+> (shown in the per-cluster label), and which has the lowest? Cross-reference
+> with the PAM50 confusion table from section 1 — is the cluster with the
+> *highest* silhouette width also the one most dominated by a single PAM50
+> subtype?
+
+> **Question 4.3.** Are there any tumours with a negative silhouette width?
+> Based on what you learned about Luminal A and Luminal B being biologically
+> similar, would you expect tumours from these two subtypes to be
+> over-represented among the poorly-clustered (low or negative silhouette)
+> points?
+
+## Internal vs. external validation: checking against known labels
+
+Silhouette width (like the elbow plot) is an **internal** validity measure —
+it only looks at the geometry of the clusters themselves (how compact, how
+well-separated), with no idea whether the resulting groups mean anything
+biologically. Because we happen to know the true PAM50 subtype of every
+tumour, we can also compute an **external** validity measure: how well does
+each clustering solution agree with the known labels? In most real
+unsupervised analyses labels do not exist, so this check is a luxury — but it
+is a good way to see what internal measures can and cannot tell you.
+
+The **Adjusted Rand Index (ARI)** compares two groupings of the same points.
+It scores **1** for a perfect match, **~0** for agreement no better than
+random chance, and negative values for worse-than-chance agreement.
+
+```{r ari-function}
+# Adjusted Rand Index: agreement between two clusterings of the same points
+# (1 = perfect match, ~0 = no better than random)
+adjusted_rand_index <- function(cl1, cl2) {
+  tab     <- table(cl1, cl2)
+  choose2 <- function(x) x * (x - 1) / 2
+  n       <- sum(tab)
+
+  index    <- sum(choose2(tab))
+  expected <- sum(choose2(rowSums(tab))) * sum(choose2(colSums(tab))) / choose2(n)
+  maxindex <- 0.5 * (sum(choose2(rowSums(tab))) + sum(choose2(colSums(tab))))
+
+  (index - expected) / (maxindex - expected)
+}
+```
+
+```{r ari-by-k, fig.width=6, fig.height=4}
+set.seed(42)
+ari_by_k <- sapply(2:10, function(k) {
+  cl <- kmeans(pca$x[, 1:npc], centers = k, nstart = 25)$cluster
+  adjusted_rand_index(cl, brca$pam50)
+})
+
+plot(2:10, ari_by_k, type = "b", pch = 19, col = "seagreen",
+     xlab = "Number of clusters (k)",
+     ylab = "Adjusted Rand Index vs. true PAM50 label",
+     main = "External validation: agreement with known subtypes")
+```
+
+> **Question 4.4.** Compare the three curves you have now produced: the
+> elbow plot (section 1), the silhouette-vs-*k* plot (above), and this ARI
+> plot. Do they point to the same value of *k*, or to different ones? The
+> elbow and silhouette curves are **internal** measures — they never see the
+> PAM50 labels. ARI is **external** — it directly checks agreement against
+> the labels. The silhouette width was highest at *k* = 2; can you think of
+> a biological reason why the single largest split in these tumours might be
+> a two-way one (hint: think about oestrogen-receptor status)? What does the
+> fact that internal measures do not necessarily peak at the "clinically
+> correct" number of clusters tell you about the limits of choosing *k* in a
+> purely unsupervised way, with no external knowledge at all?
+
+---
+
+# 5 — Wrap-up
+
+```{r session}
+sessionInfo()
+```
+
+> **Question 5.1 (wrap-up).** In four or five sentences, summarise the
+> journey: How do k-means and hierarchical clustering compare on this
+> dataset — do they broadly agree? How well does either method recover the
+> known PAM50 subtypes, and which subtype is easiest / hardest to isolate
+> without labels? The elbow plot, silhouette width, and ARI each suggested a
+> different "best" *k* — what does that disagreement teach you about
+> internal vs. external cluster validation? Finally, based on everything in
+> TP4–TP7, what do you see as the main value of unsupervised methods (PCA +
+> clustering) in a clinical/biological research setting where labels are not
+> always available?
