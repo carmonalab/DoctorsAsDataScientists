@@ -69,6 +69,7 @@ data.
 | **Linkage** | The rule used to decide how far apart two *clusters* are, based on the points inside them |
 | **Within-cluster sum of squares (WSS)** | How spread out the points are within their assigned cluster — lower is tighter |
 | **Silhouette width** | A score (from −1 to +1) for how well a point fits its own cluster compared with the next-closest cluster |
+| **Adjusted Rand Index (ARI)** | A metric that compares two ways of grouping the same points. It scores **1** for a perfect match, **~0** for agreement no better than random chance, and negative values for worse-than-chance agreement. |
 
 ## A toy example: how k-means finds groups
 
@@ -101,8 +102,8 @@ assigned points, and repeats until nothing changes. The black crosses are the
 final **centroids** — the "centre of gravity" of each cluster.
 
 > **Question 0.1.** In the toy plot above, the three groups are very
-> obviously separated. Do you think k-means would still find sensible
-> clusters if the three blobs overlapped substantially? What would happen to
+> obviously separated. How would k-means behave if the three blobs overlapped
+> substantially? And what would happen to
 > points that fall in the region where two blobs overlap?
 
 > **Question 0.2.** K-means requires you to specify the number of clusters,
@@ -182,7 +183,8 @@ centroid — the same idea as the toy example above, now applied to real data.
 set.seed(42)
 
 wss <- sapply(1:10, function(k) {
-  kmeans(pca$x[, 1:npc], centers = k, nstart = 25)$tot.withinss
+  km <- kmeans(pca$x[, 1:npc], centers = k, nstart = 25)
+  km$tot.withinss
 })
 
 plot(1:10, wss, type = "b", pch = 19, col = "steelblue",
@@ -221,13 +223,22 @@ legend("topright", legend = paste("Cluster", 1:4),
        col = cl_cols, pch = 19, cex = 0.85)
 ```
 
+> **Question 1.2.** Are there clearly 4 clusters, or could one think of splitting
+> the data into a different number of groups? How could one change the code to
+> cluster the data with e.g. 2 clusters?
+
 ## How well do the k-means clusters match PAM50 subtypes?
+
+We now have two criteria for splitting the data into groups: the known PAM50 subtype (stored in `scores$subtype`) and the
+unsupervised grouping produced by clustering (stored in `scores$cluster_km`). We can check if they agree:
 
 ```{r confusion}
 tab_km <- table(Cluster = scores$cluster_km, PAM50 = scores$subtype)
 tab_km
 round(prop.table(tab_km, margin = 1) * 100, 1)
 ```
+
+And in terms of proportions:
 
 ```{r cluster-bar, fig.width=7, fig.height=5}
 pct_mat <- t(prop.table(tab_km, margin = 1)) * 100   # subtypes × clusters
@@ -241,12 +252,21 @@ barplot(pct_mat,
         main = "PAM50 subtype composition of each k-means cluster")
 ```
 
+> **Question 1.3.** Is any cluster dominated by a single PAM50 subtype?
+> Which subtype is most cleanly captured by a single cluster, and which
+> subtypes are most likely to be mixed together?
+
+> **Question 1.4.** The clustering algorithm had no access to the PAM50
+> subtype labels — it worked only from gene expression values. Yet it
+> partially recovers the clinical subtypes. What does this demonstrate about
+> the information content of these 50 genes?
+
 ## Gene expression by cluster
 
 ```{r cluster-genes, fig.width=10, fig.height=7}
 highlight_genes <- c("ESR1", "ERBB2", "KRT5", "MKI67", "PGR", "FOXA1")
 pretty <- c("ESR1 (ER gene)", "ERBB2 (HER2 gene)", "KRT5 (basal)",
-            "MKI67 (Ki-67)", "PGR (PR gene)", "FOXA1 (luminal TF)")
+            "MKI67 (proliferation)", "PGR (PR gene)", "FOXA1 (luminal TF)")
 
 par(mfrow = c(2, 3))
 for (i in seq_along(highlight_genes)) {
@@ -258,19 +278,24 @@ for (i in seq_along(highlight_genes)) {
 par(mfrow = c(1, 1))
 ```
 
-> **Question 1.2.** Is any cluster dominated by a single PAM50 subtype?
-> Which subtype is most cleanly captured by a single cluster, and which
-> subtypes are most likely to be mixed together? Looking at the boxplots:
-> which cluster has the highest *ESR1* and *PGR* expression (consistent
-> with Luminal A), and which has the highest *KRT5* expression (consistent
-> with Basal-like)?
+> **Question 1.5.** Look at the ESR1, PGR, and FOXA1 boxplots — these three
+> genes are markers of hormone/luminal signalling. Which cluster(s) show the
+> highest expression of all three, and does this match the cluster(s) most
+> enriched for Luminal A tumours in the confusion table above? Now look at
+> MKI67 (a proliferation marker) — is it highest in the same clusters, or in
+> different ones? What does that tell you about how proliferative luminal 
+> tumours are likely to be?
 
-> **Question 1.3.** The clustering algorithm had no access to the PAM50
-> subtype labels — it worked only from gene expression values. Yet it
-> partially recovers the clinical subtypes. What does this demonstrate about
-> the information content of these 50 genes?
+> **Question 1.6.** One of the clusters is strongly associated with the basal
+> cancer subtype. What is special about the gene expression patterns in this cluster?
+> How does that relate to the fact that basal tumors are also often triple-negative
+> breast cancers (TNBC)?
 
-> **Question 1.4.** Luminal A and Luminal B tumours are both ER-positive,
+> **Question 1.7.** Which cluster has particularly high expression of the HER2 gene
+> (ERBB2), and does that make sense in relation to which cancer types are enriched
+> in this cluster?
+
+> **Question 1.8.** Luminal A and Luminal B tumours are both ER-positive,
 > yet they have different prognoses and treatment recommendations. If the
 > unsupervised clustering tends to group them together, what does this
 > suggest about how similar they are at the gene-expression level?
