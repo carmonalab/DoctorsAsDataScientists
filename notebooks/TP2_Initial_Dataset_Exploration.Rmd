@@ -3,6 +3,10 @@ title: "TP2 — Initial exploration of real biomedical datasets"
 subtitle: "Doctors as Data Scientists · Introduction to Exploratory Data Analysis in R"
 author: "Santiago Carmona"
 date: "`r Sys.Date()`"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file, encoding=encoding,
+  output_file=file.path(dirname(input_file), '..', out_dir, 'TP2_Initial_Dataset_Exploration.html'))})
 output:
   html_document:
     toc: true
@@ -26,13 +30,17 @@ knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
 
 By the end of this practical you should be able to:
 
-1. Inspect a dataset's structure and distinguish types of variables
-2. Compute summary statistics (mean, median, SD, coefficient of variation) overall and by group
-3. Use histograms to recognise symmetric, left- and right-skewed distributions and apply data transformations to change them
-4. Compare groups visually using boxplots
-5. Identify and deal with missing values and outliers
-6. Apply standardisation to compare variables measured on different scales
-7. Interpret parallel-coordinates plots to compare multivariate profiles across individuals and groups
+1.  Inspect a dataset's structure and distinguish types of variables
+2.  Compute summary statistics (mean, median, SD, coefficient of
+    variation) overall and by group
+3.  Use histograms to recognise symmetric, left- and right-skewed
+    distributions and apply data transformations to change them
+4.  Compare groups visually using boxplots
+5.  Identify and deal with missing values and outliers
+6.  Apply standardisation to compare variables measured on different
+    scales
+7.  Interpret parallel-coordinates plots to compare multivariate
+    profiles across individuals and groups
 
 # Instructions
 
@@ -46,8 +54,8 @@ By the end of this practical you should be able to:
 > (Case Study 1) and another one on blood laboratory analysis (Case
 > Study 2). Initial questions in Case Study 1 do not require coding;
 > just examining the code and the output; the final **advanced
-> questions** of Case Study 1, as well as questions in Case Study 2
-> are not necessarily found in the notebook outputs and might require
+> questions** of Case Study 1, as well as questions in Case Study 2 are
+> not necessarily found in the notebook outputs and might require
 > adapting some code lines, putting to work your acquired R programming
 > skills!
 
@@ -63,7 +71,7 @@ physically active adults** (247 men and 260 women), from the
 The 21 body measurements come in two families (all in **cm**):
 
 | Family | Examples (column codes) | Meaning |
-|-------------------|----------------------------------|-------------------|
+|----|----|----|
 | **Skeletal diameters** | `bia_di`, `bii_di`, `bit_di`, `che_di`, `elb_di`, `wri_di`, `kne_di`, `ank_di` | bone-to-bone breadths (biacromial/shoulder, biiliac/pelvis, bitrochanteric/hip, chest, elbow, wrist, knee, ankle) |
 | **Girths (circumferences)** | `sho_gi`, `che_gi`, `wai_gi`, `hip_gi`, `thi_gi`, `bic_gi`, `for_gi`, `cal_gi` | shoulder, chest, waist, hip, thigh, biceps, forearm, calf |
 
@@ -210,16 +218,18 @@ tapply(bd$sho_gi, bd$sex, mean)
 > females?
 
 Now we calculate standard deviations
+
 ```{r}
 sd(bd$sho_gi)
 sd(bd$sho_gi[bd$sex=="male"])
 sd(bd$sho_gi[bd$sex=="female"])
 ```
 
-> **Question 2.13.** How does the standard deviation (SD) change in the complete population compared to females or
-> males only?
+> **Question 2.13.** How does the standard deviation (SD) change in the
+> complete population compared to females or males only?
 
-Now we'll define a function to calculate the coefficient of variation (CV) for any numeric vector
+Now we'll define a function to calculate the coefficient of variation
+(CV) for any numeric vector
 
 ```{r}
 cv <- function(x, na.rm = TRUE) {
@@ -233,7 +243,8 @@ cv(bd$sho_gi[bd$sex=="male"])
 cv(bd$sho_gi[bd$sex=="female"])
 ```
 
-> **Question 2.14.** Are inter-sex differences in SD large or small compared to those in CV? Explain the differences between SD and CV.
+> **Question 2.14.** Are inter-sex differences in SD large or small
+> compared to those in CV? Explain the differences between SD and CV.
 
 ## Visually comparing groups using boxplots
 
@@ -275,6 +286,7 @@ table(bd$age_above_40)
 > old?
 
 Now we look at boxplots for each age group separately
+
 ```{r}
 par(mfrow = c(1, 2))
 boxplot(sho_gi ~ age_above_40, data = bd, col = c("plum","steelblue"),
@@ -321,13 +333,13 @@ for (m in measurement_columns) {
 > Can you think of variables other than sex that might partly explain
 > the measured variables?
 
-> **Question 2.22.** if you were designing a medical device to be
+> **Question 2.22.** If you were designing a medical device to be
 > located around the wrist of a person (drawn from the population
 > studied), which is the shortest size range that would accommodate 99%
 > of the population?
 
 > **Question 2.23.** Calculate the body mass index (BMI). What is the
-> average BMI? Generate a boxplot. Are there outliers? How many
+> average BMI? Generate a boxplot. How many
 > individuals have a BMI above 30 kg/m\^2 (considered well above the
 > healthy range)? Now calculate BMI separating by sex and age groups.
 > Which groups seem to have a higher BMI in the population sampled?
@@ -418,6 +430,7 @@ hcv[is.na(hcv$CHOL),]
 ```
 
 Let's remove missing values (NA's) and calculate the mean:
+
 ```{r}
 mean(hcv$CHOL, na.rm=TRUE)
 ```
@@ -435,7 +448,7 @@ hist(hcv$AST, breaks = 40, col = "steelblue",
 ```
 
 ```{r box-ast}
-boxplot(hcv$AST, horizontal = TRUE, col = "steelblue",
+boxplot(hcv$AST,col = "steelblue",
         main = "Boxplot of AST", xlab = "AST (U/L)")
 ```
 
@@ -452,11 +465,15 @@ ones.
 
 ```{r hist-ast-log}
 hist(log(hcv$AST), breaks = 40, col = "steelblue",
-     main = "Distribution of AST", xlab = "log(AST)")
+     main = "Histogram of log of AST", xlab = "log(AST)")
+
+boxplot(log(hcv$AST), col = "steelblue",
+     main = "Boxplot of log of AST", ylab = "log(AST)")
 ```
 
 > **Question 2.29.** Compare the shapes with and without log
 > normalisation using histograms and boxplots.
+
 
 ## Spotting unusual values (outliers)
 
@@ -472,26 +489,57 @@ boxplot(hcv[,labs],las=2)
 > likely to be *mistakes* (typos, machine errors) or *real* extreme
 > results from very sick patients? How would you decide? (Hint: the
 > following function will retrieve the observation with the maximum
-> value in a given variable, here ALP.)
+> value in a given variable, here CREA)
 
 ```{r}
-hcv[which.max(hcv$ALP),]  
+hcv[which.max(hcv$CREA),]
 ```
+
+Let's focus on CREA:
+
+```{r}
+boxplot(hcv$CREA)
+```
+
+The following function returns the values of the `outliers` in the CREA variable, as defined by the boxplot (and the boxplot.stats) function. That is, points sitting more than 1.5 times the interquartile range (IQR = Q3 − Q1, the width of the middle 50% of the data) beyond the edges of that middle-50% range
+
+```{r}
+boxplot.stats(hcv$CREA)$out
+```
+
+> **Question 2.31.** How many outliers are there according to the
+> boxplot definition of outlier?
+
+```{r}
+boxplot.stats(log(hcv$CREA))$out
+```
+
+We can now see which observations those values correspond to:
+
+```{r}
+out_vals <- boxplot.stats(hcv$CREA)$out
+hcv[hcv$CREA %in% out_vals, ]
+```
+
+> **Question 2.32.** Is there an enrichment in particular diagnosis
+> groups among outliers compared to the complete dataset? In other
+> words, is there a diagnosis group over-represented among outliers?
 
 ## Standardization
 
-> **Question 2.31.** Study again the previous graph with boxplots. Would you say that the
-> different measurements are in the same scale or that they rather vary
-> across different value ranges? For instance, compare CHE to ALP in the
-> plot below. How do they differ in terms of mean and standard deviation?
-> is that a problem for visualizing them together in the same scale?
+> **Question 2.33.** Study again the previous graph with boxplots. Would
+> you say that the different measurements are in the same scale or that
+> they rather vary across different value ranges? For instance, compare
+> CHE to ALP in the plot below. How do they differ in terms of mean and
+> standard deviation? Is that a problem for visualizing them together in
+> the same scale?
 
 ```{r}
 boxplot(hcv[,c("ALP","CHE")])
 ```
 
-> **Question 2.32.** compare the previous boxplot with the following one. How did we bring
-> them to the same scale?
+> **Question 2.34.** Compare the previous boxplot with the following
+> one. How did we bring them to the same scale?
 
 ```{r}
 alp_standardized <- (hcv$ALP - mean(hcv$ALP, na.rm = TRUE)) / sd(hcv$ALP, na.rm = TRUE)
@@ -500,12 +548,13 @@ che_standardized <- (hcv$CHE - mean(hcv$CHE, na.rm = TRUE)) / sd(hcv$CHE, na.rm 
 boxplot(data.frame(ALP = alp_standardized, CHE = che_standardized))
 ```
 
-By scaling the data so that both measurements are expressed in the
-same units or range, making it easier to compare their distributions
+By scaling the data so that both measurements are expressed in the same
+units or range, making it easier to compare their distributions
 visually. This can be achieved by `standardizing` or normalizing the
-data, such as using `z-scores` or min-max scaling. 
+data, such as using `z-scores` or min-max scaling.
 
-> **Question 2.33.** What are the means and standard deviations of alp_standardized and che_standardized?
+> **Question 2.35.** What are the means and standard deviations of
+> alp_standardized and che_standardized?
 
 ## Comparing disease groups
 
@@ -514,7 +563,7 @@ boxplot(AST ~ Category, data = hcv, col = "lightblue",
         main = "AST by diagnosis", xlab = "", ylab = "AST (U/L)")
 ```
 
-> **Question 2.34.** How does AST (a marker of liver-cell damage) change
+> **Question 2.36.** How does AST (a marker of liver-cell damage) change
 > with disease severity?
 
 Now let's explore all measurements
@@ -528,13 +577,13 @@ for (v in labs) {
 par(mfrow = c(1, 1))
 ```
 
-> **Question 2.35.** Are there markers that tend to be lower in
+> **Question 2.37.** Are there markers that tend to be lower in
 > cirrhosis patients compared to control? Does that make biological
 > sense? Which tests separate the disease groups most clearly, and which
 > hardly differ between groups? How would you tell if the differences
 > are statistically significant?
 
-## Visualizing all variables at once
+## BONUS Exercise: Visualizing all variables at once
 
 We will generate a `parallel coordinates plot`, where each observation
 is represented by a line that connects values across variables. In this
@@ -548,13 +597,13 @@ hcv_clean <- na.omit(hcv)
 parallelplot(hcv_clean[, labs], horizontal.axis = FALSE, scales = list(x = list(rot = 90)))
 ```
 
-> **Question 2.36.** Interpret the parallel profiles plot. Why do the lines in some
-> columns look all compressed in the bottom while others look more
-> dispersed? what is the `na.omit` function doing, and what happens if we
-> don't use it?
+> **Question 2.38.** Interpret the parallel profiles plot. Why do the
+> lines in some columns look all compressed in the bottom while others
+> look more dispersed? what is the `na.omit` function doing, and what
+> happens if we don't use it?
 
-> **Question 2.37.** `CREA` is one of the most "compressed" variables. what happens in the
-> following plot, after log-transforming it?
+> **Question 2.39.** `CREA` is one of the most "compressed" variables.
+> what happens in the following plot, after log-transforming it?
 
 ```{r}
 hcv_clean_log <- hcv_clean
@@ -569,27 +618,28 @@ Now we will split the parallel plot by diagnosis group.
 parallelplot(~hcv_clean_log[, labs] | hcv_clean_log$Category, horizontal.axis = FALSE, scales = list(x = list(rot = 90)))
 ```
 
-> **Question 2.38.** Can you identify different patterns associated to each profile? How
-> do they compare to random groups of individuals? (shown in the following
-> plot)
+> **Question 2.40.** Can you identify different patterns associated to
+> each profile? How do they compare to random groups of individuals?
+> (shown in the following plot)
 
 ```{r}
 parallelplot(~hcv_clean_log[, labs] | sample(hcv_clean_log$Category), horizontal.axis = FALSE, scales = list(x = list(rot = 90)))
 ```
 
-Next we will plot the average for each diagnosis group instead of all individual measurements
+Next we will plot the average for each diagnosis group instead of all
+individual measurements
 
 ```{r}
 #Average each test within each diagnosis group, and look at the table
-profiles <- aggregate(hcv_clean_log[,labs], by = list(Group = hcv_clean_log$Category), FUN = mean, na.rm = TRUE)
-profiles
-parallelplot(profiles, group=profiles$Group, horizontal.axis = FALSE, scales = list(x = list(rot = 90)), auto.key = list(space = "top"))
+mean_profiles <- aggregate(hcv_clean_log[,labs], by = list(Group = hcv_clean_log$Category), FUN = mean, na.rm = TRUE)
+mean_profiles
+parallelplot(mean_profiles[,labs], group=mean_profiles$Group, horizontal.axis = FALSE, scales = list(x = list(rot = 90)), auto.key = list(space = "top"))
 
 ```
 
-> **Question 2.39.** Reading the profile plot, which lab tests pull the **cirrhosis** line far away
-> from the **donor** line (the most *discriminating* tests)? 
-
+> **Question 2.41.** Reading the profile plot, which lab tests pull the
+> **cirrhosis** line far away from the **donor** line (the most
+> *discriminating* tests)?
 
 ------------------------------------------------------------------------
 
